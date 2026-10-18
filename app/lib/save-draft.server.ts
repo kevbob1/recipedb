@@ -10,7 +10,10 @@
  *  - Recipe: a single stored dish, one import or manual entry. No merge.
  *  - Draft: every import lands here awaiting review. Saving keeps isDraft=true
  *    until a person explicitly publishes it (out of MVP scope; see #11).
- *  - qty: TEXT so fractions, ranges, and words round-trip verbatim.
+ *  - qty: TEXT so fractions, ranges, and words round-trip verbatim. The
+ *    numeric view (qty_amount/qty_amount2/qty_unit_normalized/qty_parse_status)
+ *    is derived on write by app/lib/quantity-parse.ts; qty itself is never
+ *    rewritten. See the decision on #15.
  */
 import { eq } from "drizzle-orm";
 import { getRawSqlite } from "../db/client.server";
@@ -29,6 +32,7 @@ import {
 import { getDb } from "../db/client.server";
 import type { RecipeDraft } from "./draft";
 import { normalizeTag, trimOnly, trimOnlyRequired } from "./normalize";
+import { resolveQuantity } from "./quantity-parse";
 
 export interface SaveDraftResult {
   recipeId: number;
@@ -71,13 +75,27 @@ export function saveDraft(draft: RecipeDraft): SaveDraftResult {
 
   const cleanIngredients: Omit<NewIngredientLine, "recipeId">[] =
     draft.ingredients
-      .map((ing, i) => ({
-        qty: trimOnlyRequired(ing.qty),
-        unit: trimOnly(ing.unit),
-        item: trimOnlyRequired(ing.item || ing.text),
-        note: trimOnly(ing.note),
-        position: i + 1,
-      }))
+      .map((ing, i) => {
+        const qty = trimOnlyRequired(ing.qty);
+        const unit = trimOnly(ing.unit);
+        // Parse-on-write. A row that already carries a trusted parse (importer
+        // output, or a draft re-loaded from the DB) keeps it; anything else —
+        // including a hand-edited qty, which the editor resets to `unparsed` —
+        // is parsed here so the numeric columns are never left stale.
+        // See the decision on #15.
+        const parsed = resolveQuantity({ ...ing, qty, unit });
+        return {
+          qty,
+          unit,
+          item: trimOnlyRequired(ing.item || ing.text),
+          note: trimOnly(ing.note),
+          position: i + 1,
+          qtyAmount: parsed.amount,
+          qtyAmount2: parsed.amount2,
+          qtyUnitNormalized: parsed.unitNormalized,
+          qtyParseStatus: parsed.status,
+        };
+      })
       .filter((row) => row.item.length > 0);
 
   const cleanSteps: Omit<NewStep, "recipeId">[] = draft.steps
@@ -169,6 +187,12 @@ export function loadDraft(id: number): RecipeDraft | null {
         item: row.item,
         note: row.note,
         confidence: row.qty ? "ok" : "warn",
+        // Carry the stored numeric view back into the editor so the scaled view
+        // is exact (and so a save without edits does not re-derive anything).
+        qtyAmount: row.qtyAmount,
+        qtyAmount2: row.qtyAmount2,
+        qtyUnitNormalized: row.qtyUnitNormalized,
+        qtyParseStatus: row.qtyParseStatus,
       })),
     steps: sts
       .sort((a, b) => a.position - b.position)

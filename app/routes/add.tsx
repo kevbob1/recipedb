@@ -21,11 +21,14 @@ import type { Route } from "./+types/add";
 import {
   CATEGORIES,
   type Category,
+  type DraftIngredient,
   type RecipeDraft,
   blankDraft,
+  clearParsedQuantity,
   countNeedEyes,
   ingredientConfidence,
 } from "../lib/draft";
+import { formatAmount, resolveQuantity, scaleQuantity } from "../lib/quantity-parse";
 import { recognizeText, ocrTextToDraft, guessCategory } from "../lib/ocr";
 import { requireAuth } from "../lib/auth.server";
 
@@ -610,6 +613,8 @@ export function ReviewEditor({
         onChange={(ingredients) => setDraft({ ...draft, ingredients })}
       />
 
+      <ScaledIngredientList ingredients={draft.ingredients} />
+
       <FieldLabel
         label="Steps"
         badge={
@@ -729,6 +734,116 @@ function TagsEditor({ tags, onChange }: { tags: string[]; onChange: (t: string[]
   );
 }
 
+/**
+ * Hand-editing the qty text clears the derived numeric view. The write path
+ * re-parses from the text (see resolveQuantity), which is what "a manual qty
+ * edit resets the row to unparsed" means in the decision on #15: numbers we
+ * derived from text the person has since replaced are not trusted.
+ */
+function applyQtyEdit(ing: DraftIngredient, qty: string): DraftIngredient {
+  return clearParsedQuantity({ ...ing, qty });
+}
+
+/** Factors offered by the review screen; anything else goes in the custom box. */
+const MULTIPLIER_PRESETS = [0.5, 1, 2, 3] as const;
+
+function multiplierLabel(factor: number): string {
+  return `${formatAmount(factor)}\u00d7`;
+}
+
+/**
+ * Derived scaled view of the ingredient list — the multiplier UI.
+ *
+ * Display only: `qty` is the stored source of truth and is never rewritten.
+ * Rows whose quantity could not be parsed (a pinch, to taste) render verbatim
+ * with a "scaling not applied" mark instead of a wrong number.
+ *
+ * Lives in the shared ReviewEditor, so it is on both /add (step 3) and
+ * /recipes/:id/review; exported so the cook view (#18) can reuse it.
+ */
+export function ScaledIngredientList({
+  ingredients,
+}: {
+  ingredients: RecipeDraft["ingredients"];
+}) {
+  const [factor, setFactor] = useState<number>(1);
+  const [custom, setCustom] = useState("");
+
+  function onCustom(value: string) {
+    setCustom(value);
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) setFactor(parsed);
+  }
+
+  const presetActive = MULTIPLIER_PRESETS.some((f) => f === factor);
+
+  return (
+    <div style={{ border: "1px solid #e3ddd2", borderRadius: 12, padding: "10px 12px", background: "#fdfcf8" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <strong style={{ fontSize: 13 }}>Scaled view</strong>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          {MULTIPLIER_PRESETS.map((f) => (
+            <button
+              key={f}
+              type="button"
+              aria-pressed={factor === f}
+              onClick={() => {
+                setFactor(f);
+                setCustom("");
+              }}
+              style={{
+                ...ghostBtn,
+                padding: "4px 10px",
+                fontSize: 12,
+                background: factor === f ? "#f6e1d8" : "#fff",
+                borderColor: factor === f ? "#b04a2f" : "#c9c1b1",
+                color: factor === f ? "#b04a2f" : "inherit",
+              }}
+            >
+              {multiplierLabel(f)}
+            </button>
+          ))}
+          <input
+            aria-label="custom multiplier"
+            inputMode="decimal"
+            value={custom}
+            onChange={(e) => onCustom(e.target.value)}
+            placeholder={presetActive ? "custom" : multiplierLabel(factor)}
+            style={{ ...inputStyle, width: 96, marginTop: 0 }}
+          />
+        </div>
+      </div>
+      <p style={{ color: "#6b655c", fontSize: 12, margin: "6px 0 8px" }}>
+        Display only — showed at {multiplierLabel(factor)}; the saved quantity never changes.
+      </p>
+      {ingredients.length === 0 ? (
+        <p style={{ color: "#6b655c", fontSize: 13 }}>Nothing to scale yet.</p>
+      ) : (
+        <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+          {ingredients.map((ing, i) => {
+            const parsed = resolveQuantity(ing);
+            const scaled = scaleQuantity(ing.qty, factor, parsed);
+            const unit = ing.unit ?? parsed.unitNormalized ?? "";
+            return (
+              <li
+                key={i}
+                style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "4px 0", fontSize: 14, borderTop: i === 0 ? "none" : "1px solid #ece8de" }}
+              >
+                <span style={{ minWidth: 84, fontWeight: 600 }}>{scaled.display}</span>
+                <span style={{ color: "#3a3733" }}>
+                  {[unit, ing.item].filter(Boolean).join(" ")}
+                  {ing.note ? <span style={{ color: "#6b655c" }}>, {ing.note}</span> : null}
+                </span>
+                {scaled.scaled ? null : <BadgeWarn text="⚠ scaling not applied" />}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function IngredientListEditor({
   ingredients,
   onChange,
@@ -765,14 +880,16 @@ function IngredientListEditor({
               <input
                 aria-label="quantity"
                 value={ing.qty}
-                onChange={(e) => updateIng(i, { ...ing, qty: e.target.value })}
+                onChange={(e) => updateIng(i, applyQtyEdit(ing, e.target.value))}
                 placeholder="qty"
                 style={{ ...inputStyle, flex: 1 }}
               />
               <input
                 aria-label="unit"
                 value={ing.unit ?? ""}
-                onChange={(e) => updateIng(i, { ...ing, unit: e.target.value || null })}
+                onChange={(e) =>
+                  updateIng(i, { ...ing, unit: e.target.value || null, qtyUnitNormalized: null })
+                }
                 placeholder="unit"
                 style={{ ...inputStyle, flex: 1 }}
               />
@@ -791,6 +908,11 @@ function IngredientListEditor({
               placeholder="note (optional)"
               style={{ ...inputStyle, marginTop: 6 }}
             />
+            {ing.qtyParseStatus === "unparseable" ? (
+              <span style={{ fontSize: 11, color: "#a26800" }}>
+                ⚠ could not read a number from “{ing.qty}” — shown as written
+              </span>
+            ) : null}
             <button
               type="button"
               onClick={() => onChange(ingredients.filter((_, j) => j !== i))}
@@ -806,7 +928,15 @@ function IngredientListEditor({
         onClick={() =>
           onChange([
             ...ingredients,
-            { text: "", qty: "", unit: null, item: "", note: null, confidence: "bad" },
+            {
+              text: "",
+              qty: "",
+              unit: null,
+              item: "",
+              note: null,
+              confidence: "bad",
+              qtyParseStatus: "unparsed",
+            },
           ])
         }
         style={{ ...ghostBtn, marginTop: 6 }}

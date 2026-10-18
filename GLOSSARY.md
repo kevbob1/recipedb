@@ -33,7 +33,7 @@ _Avoid_: Image attachment, scan file
 ### Recipe content
 
 **Ingredient line**:
-One ingredient as the four parts: quantity (a string preserving fractions and ranges like "2-3 cloves", "a bunch"), unit (optional, free-text), item, and note.
+One ingredient as the four parts: quantity (a string preserving fractions and ranges like "2-3 cloves", "a bunch"), unit (optional, free-text), item, and note. A quantity may also carry a derived numeric reading — a low and optional high amount, a normalized unit, and a parse status saying whether a number was read — which is used only to scale a displayed recipe; the written quantity remains the source of truth and is never rewritten.
 _Avoid_: Ingredient entry, component
 
 **Step**:

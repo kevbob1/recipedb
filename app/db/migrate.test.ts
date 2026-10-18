@@ -52,10 +52,32 @@ describe("migrations + FTS5", () => {
     const journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
     expect(Object.keys(journal).length).toBe(first.applied.length);
 
+    // Fresh DB: the whole journal lands, 0000_init included (no replay dance
+    // needed — a fresh file has nothing applied).
+    expect(first.applied).toEqual(["0000_init", "0001_scaling_quantity"]);
+
     // Re-running is a no-op.
     const second = runMigrations();
     expect(second.applied).toEqual([]);
     expect(second.skipped).toEqual(first.applied);
+  });
+
+  it("fresh DB has the derived quantity columns from 0001_scaling_quantity", () => {
+    const cols = (
+      getRawSqlite().prepare("PRAGMA table_info(ingredient_lines)").all() as Array<{
+        name: string;
+      }>
+    ).map((c) => c.name);
+    expect(cols).toEqual(
+      expect.arrayContaining([
+        "qty_amount",
+        "qty_amount2",
+        "qty_unit_normalized",
+        "qty_parse_status",
+      ]),
+    );
+    // qty stays the display source of truth.
+    expect(cols).toContain("qty");
   });
 
   it("FTS5 index returns rows matching title / ingredient / tag content", () => {

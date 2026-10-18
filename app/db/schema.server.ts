@@ -20,12 +20,14 @@ import {
   index,
   integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
 import { CATEGORIES, type Category } from "../lib/categories";
+import type { QtyParseStatus } from "../lib/quantity-parse";
 
 export { CATEGORIES, type Category };
 
@@ -71,8 +73,13 @@ export const recipes = sqliteTable(
 
 /**
  * Ingredient line — the four parts the GLOSSARY specifies.
- * qty is a STRING so "2-3 cloves" and "a bunch" round-trip verbatim.
- * unit is optional free text (e.g. "tbsp", "cups", "cloves").
+ * `qty` is a STRING and remains the DISPLAY source of truth, so "2-3 cloves"
+ * and "a bunch" round-trip verbatim.
+ *
+ * The `qtyAmount`/`qtyAmount2`/`qtyUnitNormalized`/`qtyParseStatus` columns are
+ * the derived numeric view (decision on #15, #16): additive, nullable, and
+ * written by the parser in app/lib/quantity-parse.ts. A scaled view is always
+ * derived (amount x factor) and never rewrites `qty`.
  */
 export const ingredientLines = sqliteTable(
   "ingredient_lines",
@@ -92,6 +99,20 @@ export const ingredientLines = sqliteTable(
     note: text("note"),
     /** Display order within the recipe. */
     position: integer("position").notNull(),
+    /** Low end (or the single value) of the parsed quantity. Null when unparsed. */
+    qtyAmount: real("qty_amount"),
+    /** High end of a range ("2-3" -> 3). Null for single values. */
+    qtyAmount2: real("qty_amount2"),
+    /** Canonical unit token from app/lib/units.ts; null when unknown/absent. */
+    qtyUnitNormalized: text("qty_unit_normalized"),
+    /**
+     * parsed | range | unparseable | unparsed. `unparsed` is the column default
+     * (never attempted) — the one-shot backfill looks for exactly that.
+     */
+    qtyParseStatus: text("qty_parse_status")
+      .$type<QtyParseStatus>()
+      .notNull()
+      .default("unparsed"),
   },
   (table) => [
     index("ingredient_lines_recipe_idx").on(table.recipeId),

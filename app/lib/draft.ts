@@ -17,6 +17,7 @@
  */
 
 import { CATEGORIES, type Category } from "./categories";
+import type { QtyParseStatus } from "./quantity-parse";
 
 /** Closed MVP category list, re-exported for client code. */
 export { CATEGORIES };
@@ -29,6 +30,11 @@ export type Confidence = "ok" | "warn" | "bad";
  * Ingredient line as edited in the review screen.
  * Matches the persisted four-part shape (qty, unit, item, note) plus the raw
  * line text and the per-line confidence badge.
+ *
+ * The `qty*` derived fields are the numeric view from app/lib/quantity-parse.ts
+ * (decision on #15): optional, because a brand-new manual row has nothing to
+ * carry. Editing the qty text by hand clears them, and the save path
+ * re-parses (see resolveQuantity).
  */
 export interface DraftIngredient {
   /** Raw line as captured (e.g. "2-3 cloves garlic, minced"). */
@@ -39,6 +45,14 @@ export interface DraftIngredient {
   note: string | null;
   /** Per-line confidence, set by the importer. */
   confidence: Confidence;
+  /** Low end (or single value) of the parsed quantity. */
+  qtyAmount?: number | null;
+  /** High end of a range ("2-3" -> 3); null for a single value. */
+  qtyAmount2?: number | null;
+  /** Canonical unit token (app/lib/units.ts); null when unknown/absent. */
+  qtyUnitNormalized?: string | null;
+  /** parsed | range | unparseable | unparsed. */
+  qtyParseStatus?: QtyParseStatus;
 }
 
 /** Step as edited in the review screen. */
@@ -101,6 +115,24 @@ export function blankDraft(): RecipeDraft {
     favorite: false,
     ingredients: [],
     steps: [],
+  };
+}
+
+/**
+ * Clear the derived numeric view of an ingredient line (#16).
+ *
+ * The review screen calls this whenever the qty text is edited by hand: numbers
+ * derived from text the person has since replaced are not trusted, so the row
+ * goes back to the column default `unparsed` and the write path re-parses from
+ * the text (see resolveQuantity in ./quantity-parse).
+ */
+export function clearParsedQuantity(ing: DraftIngredient): DraftIngredient {
+  return {
+    ...ing,
+    qtyAmount: null,
+    qtyAmount2: null,
+    qtyUnitNormalized: null,
+    qtyParseStatus: "unparsed",
   };
 }
 
