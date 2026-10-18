@@ -1,0 +1,6 @@
+apiVersion: v2
+name: recipedb
+description: recipedb - single-household recipe organizer (React Router + SQLite on a PVC)
+type: application
+version: 0.1.0
+appVersion: "1.1.0"

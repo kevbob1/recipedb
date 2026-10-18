@@ -1,0 +1,180 @@
+# -----------------------------------------------------------------------------
+# recipedb k8s values (#21)
+#
+# Differs from the other charts in the cluster (pharmacy-simulator, moviedb)
+# in one important way: recipedb is a *stateful single-writer* app. The SQLite
+# database (recipes.db + WAL), uploaded images and the migration journal all
+# live in DATA_DIR=/data, so the release needs:
+#   - one replica, never more (a second pod would corrupt/conflict on WAL)
+#   - a ReadWriteOnce PVC mounted at /data
+#   - a Recreate rollout strategy (RWO volume cannot be shared between the
+#     old and new pod during a rolling update)
+# There is deliberately no HPA for the same reason.
+# -----------------------------------------------------------------------------
+
+replicaCount: 1
+
+image:
+  repository: registry.k.pd.o/recipedb
+  tag: "0.1"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: my-registry-secret
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: false
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+# SQLite + WAL: only one process may hold /data, so the Deployment rolls
+# with Recreate instead of a rolling update.
+strategy:
+  type: Recreate
+
+# -----------------------------------------------------------------------------
+# Service (ClusterIP; the ingress is the only way in from outside the cluster)
+# -----------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+
+# -----------------------------------------------------------------------------
+# Ingress
+#
+# Both hosts end up on the same Service. TLS:
+#   - recipedb.k.pd.o  -> served with the ingress controller's
+#     --default-ssl-certificate (default/k.pd.o-cert, SAN *.k.pd.o), which is
+#     why it needs no tls: entry (same as pharmsim.k.pd.o).
+#   - recipedb.p.drule.org -> the *.p.drule.org cert in the tls: block below.
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    kubernetes.io/ingress.class: nginx
+  hosts:
+    - host: recipedb.k.pd.o
+      paths:
+        - path: /
+          pathType: Prefix
+    - host: recipedb.p.drule.org
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: wildcard-domain-tls
+      hosts:
+        - recipedb.p.drule.org
+
+# -----------------------------------------------------------------------------
+# /data volume
+#
+# local-path (rancher.io/local-path) is the cluster default storage class; it
+# is hostPath-backed and therefore node-local: the pod is pinned to whichever
+# node first bound the claim. data is the recipe collection, so the PVC is
+# annotated helm.sh/resource-policy: keep -- `helm uninstall` must not delete
+# the recipes.
+# -----------------------------------------------------------------------------
+persistence:
+  enabled: true
+  size: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  # "" = use the cluster default StorageClass (local-path).
+  storageClassName: ""
+  # Set to reuse a pre-existing claim instead of letting the chart create one.
+  existingClaim: ""
+  annotations:
+    helm.sh/resource-policy: keep
+
+# The image already runs as uid 1000 (`USER node`); fsGroup makes the PVC
+# writable for that uid, which is the k8s equivalent of the `chown -R 1000:1000`
+# the docker runbook does.
+podSecurityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  runAsNonRoot: true
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+
+# -----------------------------------------------------------------------------
+# Environment (non-sensitive)
+#
+# COOKIE_SECURE is intentionally unset: the app derives the Secure cookie flag
+# from X-Forwarded-Proto (set by the nginx ingress), so HTTPS gets `Secure`
+# while a plain-HTTP debug port-forward still works. Set COOKIE_SECURE: "1"
+# here to force it on regardless of headers.
+# -----------------------------------------------------------------------------
+env:
+  NODE_ENV: "production"
+  PORT: "3000"
+  DATA_DIR: "/data"
+
+# -----------------------------------------------------------------------------
+# Secrets (sensitive)
+#
+# Charts in this cluster normally store these in a SOPS-encrypted
+# values-secrets.yaml decrypted by the `helm secrets` plugin. recipedb has no
+# .sops.yaml, so instead the two values are supplied at upgrade time from a
+# secret values file kept OUTSIDE the repo (operator's ~/.config), e.g.
+#   helm upgrade --install recipedb ./helm/recipedb \
+#     -f ~/.config/recipedb/k8s-secrets.yaml --set image.tag=<ts>
+# `secrets.example.yaml` in this directory shows the required keys.
+# Both are deployment-blocking: `helm template` fails if they are empty.
+# -----------------------------------------------------------------------------
+secrets:
+  FAMILY_PASSWORD_HASH: ""
+  SESSION_SECRET: ""
+
+# -----------------------------------------------------------------------------
+# Container resources
+# -----------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# -----------------------------------------------------------------------------
+# Probes -- /health runs `SELECT 1` against the SQLite db, so it covers the
+# PVC mount too.
+# -----------------------------------------------------------------------------
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# -----------------------------------------------------------------------------
+# Scheduling
+# -----------------------------------------------------------------------------
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# NO migration Job: unlike pharmacy-simulator (prisma migrate on a shared
+# Postgres), recipedb's entrypoint runs `bootstrap()` -> runMigrations()
+# before the HTTP listener opens, using the journal in /data. A pre-install
+# hook Job would need the same RWO PVC as the pod and would race it.

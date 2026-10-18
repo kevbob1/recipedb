@@ -53,12 +53,29 @@ export type SessionInfo = {
   issuedAtMs: number;
 };
 
+export type SessionCookieOptions = {
+  /**
+   * Append the `Secure` attribute, so the browser only sends the cookie
+   * over HTTPS.
+   *
+   * Left off by default: the LAN/docker deployment (deploy/run-container.sh,
+   * plain HTTP on port 3000) is still supported and a Secure cookie would
+   * never come back from it. The k8s deployment sits behind the nginx
+   * ingress, which terminates TLS and sets `X-Forwarded-Proto`; callers
+   * pass the result of `shouldUseSecureCookie(request)` (#21).
+   */
+  secure?: boolean;
+};
+
 /**
  * Build a Set-Cookie value that authenticates the browser for 30 days.
  * The returned string is the raw `name=value; ...attrs` form ready to
  * drop on a Response.
  */
-export function buildSessionCookie(now: number = Date.now()): string {
+export function buildSessionCookie(
+  now: number = Date.now(),
+  opts: SessionCookieOptions = {},
+): string {
   const secret = getSecret();
   // Tokens issued slightly in the future are tolerated to absorb clock
   // skew; tokens dated too far in the past are rejected outright.
@@ -69,28 +86,72 @@ export function buildSessionCookie(now: number = Date.now()): string {
   // httpOnly: no JS access (XSS can't steal the session).
   // SameSite=Lax: top-level GETs from off-site still get the cookie,
   // so the kitchen phone works; cross-site POSTs do not.
-  // Secure is intentionally NOT set: MVP is LAN-only no-TLS per #8.
-  return [
+  // Secure is added only when the request actually arrived over TLS
+  // (see shouldUseSecureCookie); the LAN path is plain HTTP by design.
+  const attrs = [
     `${SESSION_COOKIE_NAME}=${value}`,
     "Path=/",
     `Max-Age=${maxAgeSeconds}`,
     "HttpOnly",
     "SameSite=Lax",
-  ].join("; ");
+  ];
+  if (opts.secure) attrs.push("Secure");
+  return attrs.join("; ");
 }
 
 /**
  * Build a Set-Cookie value that immediately expires the session cookie
  * in the browser. Used by /logout.
  */
-export function buildClearSessionCookie(): string {
-  return [
+export function buildClearSessionCookie(
+  opts: SessionCookieOptions = {},
+): string {
+  const attrs = [
     `${SESSION_COOKIE_NAME}=`,
     "Path=/",
     "Max-Age=0",
     "HttpOnly",
     "SameSite=Lax",
-  ].join("; ");
+  ];
+  // Deleting a Secure cookie works with or without the attribute (the
+  // browser matches on name + domain + path), but mirroring the login
+  // cookie keeps the pair symmetric and is what the browser stores.
+  if (opts.secure) attrs.push("Secure");
+  return attrs.join("; ");
+}
+
+/**
+ * Decide whether the cookie issued/cleared for this request should carry
+ * the `Secure` attribute.
+ *
+ * Order of preference:
+ *  1. `COOKIE_SECURE` env override (`1`/`true` force on, `0`/`false` force
+ *     off). Escape hatch for a proxy that eats the forwarded header.
+ *  2. `X-Forwarded-Proto` — behind the nginx ingress TLS terminates at the
+ *     edge and the app only ever sees plain HTTP, so this is the only
+ *     signal that the browser leg is HTTPS.
+ *  3. The request URL's own scheme (direct HTTPS, e.g. `vite dev --https`).
+ *
+ * Fails closed to `false`: a missing or unparsable scheme leaves the
+ * LAN/docker path working rather than locking everyone out.
+ */
+export function shouldUseSecureCookie(request: Request): boolean {
+  const override = process.env.COOKIE_SECURE;
+  if (override !== undefined && override !== "") {
+    return override === "1" || override.toLowerCase() === "true";
+  }
+
+  const forwarded = request.headers.get("x-forwarded-proto");
+  if (forwarded) {
+    const first = forwarded.split(",")[0]?.trim().toLowerCase();
+    if (first) return first === "https";
+  }
+
+  try {
+    return new URL(request.url).protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 /**

@@ -137,3 +137,50 @@ What only a human at the counter can confirm:
 To rotate the family password: generate a new argon2id hash, edit
 `/srv/recipedb/env`, then `sudo /srv/recipedb/run-container.sh` (a new
 `SESSION_SECRET` invalidates every existing cookie, so everyone logs in again).
+
+## Kubernetes (helm) — the deployed path (#21)
+
+The house-facing deployment is the helm release `recipedb` in namespace
+`default` on the prox6 cluster, reachable at **https://recipedb.k.pd.o**
+(and https://recipedb.p.drule.org). The docker-on-prox6 runbook above stays
+valid as the LAN fallback / dev path.
+
+Chart: `helm/recipedb` (values.yaml documents each block).
+Deploy: `deploy/k8s/deploy.sh` — buildx builds and pushes
+`registry.k.pd.o/recipedb:<UTC-timestamp>`, then `helm upgrade --install`
+with `~/.config/recipedb/k8s-secrets.yaml` (mode 0600, kept outside the repo;
+copy `helm/recipedb/secrets.example.yaml`). Manual equivalent:
+
+```bash
+docker buildx build --push --platform linux/amd64 -t registry.k.pd.o/recipedb:<tag> .
+helm upgrade --install recipedb ./helm/recipedb -n default \
+  -f ./helm/recipedb/values.yaml -f ~/.config/recipedb/k8s-secrets.yaml \
+  --set image.repository=registry.k.pd.o/recipedb,image.tag=<tag> \
+  --wait --timeout 5m
+```
+
+Things this deployment does differently from the other charts in the cluster,
+all because SQLite is a single-writer store:
+
+- **1 replica, Recreate strategy, no HPA.** `/data` (recipes.db + WAL, images/,
+  migrations-applied.json) lives on a ReadWriteOnce PVC (`recipedb-data`, 5Gi,
+  local-path). Two pods must never share it.
+- **The PVC is annotated `helm.sh/resource-policy: keep`** — `helm uninstall`
+  will not delete the recipes. Delete the PVC by hand if you really mean it.
+- **No migration Job.** `server.js` runs `bootstrap()` → `runMigrations()`
+  before it starts listening, using the journal in `/data`, so a pre-install
+  hook Job (what pharmsim uses for prisma) would only race the pod for the
+  volume.
+- **Secrets:** no SOPS in this repo; `FAMILY_PASSWORD_HASH` + `SESSION_SECRET`
+  come from the operator's secret values file. `helm template` fails if either
+  is empty.
+- **Secure cookie:** the app sets `Secure` when the request arrives over TLS
+  (`X-Forwarded-Proto` from the nginx ingress), so HTTPS logins get a Secure
+  cookie while the plain-HTTP LAN fallback keeps working. `COOKIE_SECURE=1`
+  forces it on.
+- **TLS:** `recipedb.k.pd.o` is served by the ingress controller's default
+  certificate (`default/k.pd.o-cert`, SAN `*.k.pd.o`); `recipedb.p.drule.org`
+  uses the `wildcard-domain-tls` (cert-manager) secret named in the ingress.
+
+Logs / health: `kubectl -n default logs deploy/recipedb -f`,
+`curl https://recipedb.k.pd.o/health`.

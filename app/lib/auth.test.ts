@@ -27,15 +27,19 @@ import {
   readSessionFromRequest,
   SESSION_COOKIE_NAME,
   SESSION_MAX_AGE_MS,
+  shouldUseSecureCookie,
 } from "./session.server";
 
 const PASSWORD = "open-sesame-42";
 let originalHash: string | undefined;
 let originalSecret: string | undefined;
+let originalCookieSecure: string | undefined;
 
 beforeEach(() => {
   originalHash = process.env.FAMILY_PASSWORD_HASH;
   originalSecret = process.env.SESSION_SECRET;
+  originalCookieSecure = process.env.COOKIE_SECURE;
+  delete process.env.COOKIE_SECURE;
   process.env.FAMILY_PASSWORD_HASH = hashSync(PASSWORD);
   process.env.SESSION_SECRET = "test-secret-do-not-use-in-prod";
 });
@@ -45,6 +49,8 @@ afterEach(() => {
   else process.env.FAMILY_PASSWORD_HASH = originalHash;
   if (originalSecret === undefined) delete process.env.SESSION_SECRET;
   else process.env.SESSION_SECRET = originalSecret;
+  if (originalCookieSecure === undefined) delete process.env.COOKIE_SECURE;
+  else process.env.COOKIE_SECURE = originalCookieSecure;
 });
 
 /* ----------------------------- verifyPassword ----------------------------- */
@@ -119,8 +125,22 @@ describe("buildSessionCookie / parseSessionValue", () => {
     expect(cookie).toMatch(/SameSite=Lax/i);
     expect(cookie).toMatch(/Path=\//);
     expect(cookie).toMatch(/Max-Age=/);
-    // MVP is LAN-only, no TLS. Secure is intentionally absent.
+    // Plain-HTTP LAN default: Secure is off unless the caller asks for it.
     expect(cookie).not.toMatch(/Secure/i);
+  });
+
+  it("adds Secure when the request came in over TLS (#21)", () => {
+    const cookie = buildSessionCookie(Date.now(), { secure: true });
+    expect(cookie).toMatch(/;\s*Secure/);
+    // The signature value must be unaffected by the attribute.
+    const value = extractCookieValue(cookie, SESSION_COOKIE_NAME);
+    expect(parseSessionValue(value)).not.toBeNull();
+  });
+
+  it("adds Secure to the logout cookie when the request came in over TLS", () => {
+    expect(buildClearSessionCookie({ secure: true })).toMatch(/;\s*Secure/);
+    expect(buildClearSessionCookie()).not.toMatch(/Secure/i);
+    expect(buildClearSessionCookie({ secure: true })).toMatch(/Max-Age=0/);
   });
 
   it("sets Max-Age to 30 days in seconds", () => {
@@ -185,6 +205,67 @@ describe("buildSessionCookie / parseSessionValue", () => {
     // is the only one that works now.
     const fresh = extractCookieValue(buildSessionCookie(), SESSION_COOKIE_NAME);
     expect(parseSessionValue(fresh)).not.toBeNull();
+  });
+});
+
+/* -------------------------- shouldUseSecureCookie ------------------------- */
+
+describe("shouldUseSecureCookie", () => {
+  it("trusts X-Forwarded-Proto from the TLS-terminating ingress (#21)", () => {
+    const req = new Request("http://recipedb:3000/login", {
+      headers: { "x-forwarded-proto": "https" },
+    });
+    expect(shouldUseSecureCookie(req)).toBe(true);
+  });
+
+  it("does not set Secure for a plain-HTTP forwarded request", () => {
+    const req = new Request("http://recipedb:3000/login", {
+      headers: { "x-forwarded-proto": "http" },
+    });
+    expect(shouldUseSecureCookie(req)).toBe(false);
+  });
+
+  it("uses the first value when a proxy chain appends more", () => {
+    const req = new Request("http://recipedb:3000/login", {
+      headers: { "x-forwarded-proto": "https, http" },
+    });
+    expect(shouldUseSecureCookie(req)).toBe(true);
+  });
+
+  it("falls back to the request URL scheme when no header is present", () => {
+    expect(
+      shouldUseSecureCookie(new Request("https://recipedb.k.pd.o/login")),
+    ).toBe(true);
+    expect(
+      shouldUseSecureCookie(new Request("http://prox6:3000/login")),
+    ).toBe(false);
+  });
+
+  it("honours the COOKIE_SECURE override in both directions", () => {
+    const httpReq = new Request("http://prox6:3000/login");
+    const httpsReq = new Request("http://recipedb:3000/login", {
+      headers: { "x-forwarded-proto": "https" },
+    });
+
+    process.env.COOKIE_SECURE = "1";
+    expect(shouldUseSecureCookie(httpReq)).toBe(true);
+
+    process.env.COOKIE_SECURE = "true";
+    expect(shouldUseSecureCookie(httpReq)).toBe(true);
+
+    process.env.COOKIE_SECURE = "0";
+    expect(shouldUseSecureCookie(httpsReq)).toBe(false);
+
+    process.env.COOKIE_SECURE = "false";
+    expect(shouldUseSecureCookie(httpsReq)).toBe(false);
+  });
+
+  it("ignores an empty COOKIE_SECURE and falls through to detection", () => {
+    process.env.COOKIE_SECURE = "";
+    const req = new Request("http://recipedb:3000/login", {
+      headers: { "x-forwarded-proto": "https" },
+    });
+    expect(shouldUseSecureCookie(req)).toBe(true);
   });
 });
 

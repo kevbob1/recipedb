@@ -11,7 +11,10 @@
  */
 import { Form, Link, redirect, useActionData, useSearchParams } from "react-router";
 import type { Route } from "./+types/login";
-import { readSessionFromRequest } from "../lib/session.server";
+import {
+  readSessionFromRequest,
+  shouldUseSecureCookie,
+} from "../lib/session.server";
 import {
   assertHashIsArgon2id,
   buildSessionCookie,
@@ -76,8 +79,15 @@ export async function action({ request }: Route.ActionArgs) {
   // On success: throw a redirect so React Router follows it. The
   // Set-Cookie header rides on the redirect so the browser stores the
   // session before following.
+  //
+  // The cookie gets `Secure` when the browser leg is HTTPS (k8s ingress,
+  // #21); over plain-HTTP LAN it stays off so the session still works.
   throw redirect(next, {
-    headers: { "Set-Cookie": buildSessionCookie() },
+    headers: {
+      "Set-Cookie": buildSessionCookie(Date.now(), {
+        secure: shouldUseSecureCookie(request),
+      }),
+    },
   });
 }
 

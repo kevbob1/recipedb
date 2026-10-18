@@ -7,14 +7,21 @@
  */
 import { redirect } from "react-router";
 import type { Route } from "./+types/logout";
-import { buildClearSessionCookie } from "../lib/session.server";
+import {
+  buildClearSessionCookie,
+  shouldUseSecureCookie,
+} from "../lib/session.server";
 
-export async function action(_args: Route.ActionArgs) {
+export async function action({ request }: Route.ActionArgs) {
   return new Response(null, {
     status: 302,
     headers: {
       Location: "/login",
-      "Set-Cookie": buildClearSessionCookie(),
+      // Mirror the Secure flag used at login (#21) so the deletion
+      // cookie matches the stored one.
+      "Set-Cookie": buildClearSessionCookie({
+        secure: shouldUseSecureCookie(request),
+      }),
     },
   });
 }
