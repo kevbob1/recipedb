@@ -20,13 +20,15 @@ import {
   countNeedEyes,
 } from "../lib/draft";
 import { loadDraft, saveDraft, SaveError } from "../lib/save-draft.server";
+import { requireAuth } from "../lib/auth.server";
 
 export function meta({ data }: Route.MetaArgs) {
   if (!data) return [{ title: "Review — recipedb" }];
   return [{ title: `Review: ${data.draft.title || "untitled"} — recipedb` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export async function loader({ params, request }: Route.LoaderArgs) {
+  requireAuth(request);
   const id = Number(params.id);
   if (!Number.isInteger(id) || id <= 0) {
     throw new Response("Not a recipe id", { status: 400 });
@@ -39,6 +41,7 @@ export async function loader({ params }: Route.LoaderArgs) {
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
+  requireAuth(request, { isApi: true });
   const id = Number(params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return Response.json({ ok: false, error: "bad-id" }, { status: 400 });

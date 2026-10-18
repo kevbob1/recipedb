@@ -9,8 +9,11 @@
  */
 import type { Route } from "./+types/api.import-url";
 import { importFromUrl, ImportError } from "../lib/recipe-scrapers.server";
+import { requireAuth } from "../lib/auth.server";
 
 export async function action({ request }: Route.ActionArgs) {
+  // Auth gate: no valid session -> 401, before we touch the network.
+  requireAuth(request, { isApi: true });
   if (request.method !== "POST") {
     return Response.json({ error: "method-not-allowed" }, { status: 405 });
   }

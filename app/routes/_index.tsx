@@ -29,6 +29,7 @@ import {
   type Category,
   type SearchHit,
 } from "../lib/search.server";
+import { requireAuth } from "../lib/auth.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [
@@ -41,6 +42,9 @@ export function meta(_args: Route.MetaArgs) {
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
+  // Auth gate. Recipe lists, counts, and tag suggestions all live
+  // behind the family password.
+  requireAuth(request);
   const url = new URL(request.url);
   const sp = url.searchParams;
   const query = sp.get("q") ?? "";

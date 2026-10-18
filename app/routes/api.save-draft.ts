@@ -10,8 +10,11 @@
 import type { Route } from "./+types/api.save-draft";
 import { saveDraft, SaveError } from "../lib/save-draft.server";
 import type { RecipeDraft } from "../lib/draft";
+import { requireAuth } from "../lib/auth.server";
 
 export async function action({ request }: Route.ActionArgs) {
+  // Auth gate: this is the write path, gate before any DB work.
+  requireAuth(request, { isApi: true });
   if (request.method !== "POST") {
     return Response.json({ error: "method-not-allowed" }, { status: 405 });
   }

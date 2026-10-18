@@ -27,9 +27,18 @@ import {
   ingredientConfidence,
 } from "../lib/draft";
 import { recognizeText, ocrTextToDraft, guessCategory } from "../lib/ocr";
+import { requireAuth } from "../lib/auth.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Add a recipe — recipedb" }];
+}
+
+export async function loader({ request }: Route.LoaderArgs) {
+  // Auth gate. The /add page is the only protected route with no
+  // loaderData; we still need to call requireAuth so an unauthenticated
+  // visitor is bounced to /login.
+  requireAuth(request);
+  return null;
 }
 
 type Step = 1 | 2 | 3 | 4;

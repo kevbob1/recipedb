@@ -16,6 +16,7 @@
     "db:migrate": "tsx app/db/migrate.ts"
   },
   "dependencies": {
+    "@node-rs/argon2": "^2.2.2",
     "@react-router/node": "^7.9.5",
     "better-sqlite3": "^12.11.1",
     "cheerio": "^1.2.0",
