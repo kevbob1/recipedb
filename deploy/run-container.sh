@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
-# Start (or restart) the single recipedb container on prox6.
+# LOCAL DEV / VERIFICATION ONLY.
+#
+# Docker-on-prox6 was retired 2026-10-18 (its dataset was migrated into the k8s
+# PVC `recipedb-data`); prox6-docker is never a deployment target again.
+# Production is the helm release on k8s — see deploy/k8s/deploy.sh.
+#
+# This script still works for running a single throwaway container on a dev box;
+# point RECIPEDB_BASE at a writable directory you own to avoid needing /srv.
+#
 # Usage: ./run-container.sh [image-tag]   (default: recipedb:0.1)
 set -euo pipefail
 
 IMAGE="${1:-recipedb:0.1}"
 NAME=recipedb
-BASE=/srv/recipedb
+BASE="${RECIPEDB_BASE:-/srv/recipedb}"
 ENV_FILE="$BASE/env"
 
 log() { printf '[run-container] %s\n' "$*"; }

@@ -1,7 +1,28 @@
-# recipedb operations (prox6)
+# recipedb operations
+
+## Deployment targets — standing decision (2026-10-18)
+
+Two targets, no others:
+
+| Target | Role | Entry point |
+| --- | --- | --- |
+| **k8s (helm)** | production, the house-facing deployment | `deploy/k8s/deploy.sh`, chart `helm/recipedb` |
+| **local container** | dev + verification only | `deploy/run-container.sh` with a local `RECIPEDB_BASE` |
+
+**Docker-on-prox6 is retired and is never a deployment target again.** On
+2026-10-18 its dataset (1 recipe, 15 ingredient lines, 1 image) was migrated
+into PVC `recipedb-data` and verified there, the container was removed, and
+`recipedb-backup.timer` was disabled. The host data is kept as a cold archive
+at `/srv/recipedb/retired-20261018-data/` (plus `/srv/recipedb/{data,backups}`)
+— do not delete it.
+
+## Retired: docker on prox6 (historical runbook, reference only)
+
+> Kept for the archive and for the parts that still apply to a local
+> container. Nothing here runs on prox6 any more.
 
 Single container, `docker run` only (no compose, no reverse proxy, no TLS).
-LAN access at `http://prox6:3000`. Image: `recipedb:0.1`.
+LAN access was at `http://prox6:3000`. Image: `recipedb:0.1`.
 
 Paths on the host:
 
@@ -137,13 +158,17 @@ What only a human at the counter can confirm:
 To rotate the family password: generate a new argon2id hash, edit
 `/srv/recipedb/env`, then `sudo /srv/recipedb/run-container.sh` (a new
 `SESSION_SECRET` invalidates every existing cookie, so everyone logs in again).
+For the production deployment, set the hash in
+`~/.config/recipedb/k8s-secrets.yaml` and run `deploy/k8s/deploy.sh` instead;
+a new `SESSION_SECRET` there likewise invalidates every existing cookie.
 
-## Kubernetes (helm) — the deployed path (#21)
+## Kubernetes (helm) — the only production path (#21)
 
-The house-facing deployment is the helm release `recipedb` in namespace
-`default` on the prox6 cluster, reachable at **https://recipedb.k.pd.o**
-(and https://recipedb.p.drule.org). The docker-on-prox6 runbook above stays
-valid as the LAN fallback / dev path.
+The house-facing deployment — and the **only** production target since
+2026-10-18 — is the helm release `recipedb` in namespace `default` on the
+prox6 cluster, reachable at **https://recipedb.k.pd.o**
+(and https://recipedb.p.drule.org). `deploy/run-container.sh` remains for
+local dev/verification only.
 
 Chart: `helm/recipedb` (values.yaml documents each block).
 Deploy: `deploy/k8s/deploy.sh` — buildx builds and pushes
