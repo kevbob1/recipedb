@@ -25,23 +25,9 @@ import {
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
-/**
- * Fixed Category list. The set is closed in the MVP — adding a new value is a
- * schema change. Source: GLOSSARY.md.
- */
-export const CATEGORIES = [
-  "one-dish",
-  "soup",
-  "salad",
-  "bread",
-  "dessert",
-  "cookies",
-  "cake",
-  "pie",
-  "other",
-] as const;
+import { CATEGORIES, type Category } from "../lib/categories";
 
-export type Category = (typeof CATEGORIES)[number];
+export { CATEGORIES, type Category };
 
 /** Closed set of import sources for provenance. */
 export const SOURCE_TYPES = ["url", "scan", "manual"] as const;
