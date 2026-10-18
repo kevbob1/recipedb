@@ -1,0 +1,1172 @@
+<!doctype html>
+<!-- PROTOTYPE — throwaway for issue #7, never merge to main. -->
+<!-- Single-household recipe organizer: add-flow UI prototype. -->
+<!-- Three structurally different variants of the same flow. -->
+<!-- Switch with ?variant=a | b | c, or use the floating switcher / arrow keys. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>recipedb — add-flow prototype</title>
+  <style>
+    :root {
+      --bg: #f3f1ec;
+      --phone-bg: #ffffff;
+      --ink: #1f1d1a;
+      --ink-soft: #6b655c;
+      --line: #e3ddd2;
+      --line-strong: #c9c1b1;
+      --accent: #b04a2f;          /* warm terracotta */
+      --accent-soft: #f6e1d8;
+      --ok: #2f7a3e;
+      --ok-soft: #e1f1e3;
+      --warn: #a26800;
+      --warn-soft: #fbecd0;
+      --bad: #9a3030;
+      --bad-soft: #f5dada;
+      --pill-bg: #1f1d1a;
+      --pill-ink: #f6f4ee;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink);
+      font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+    body { min-height: 100vh; display: flex; justify-content: center; padding: 24px 12px 96px; }
+
+    /* The phone-shaped frame that holds a variant. */
+    .phone {
+      width: 100%;
+      max-width: 430px;
+      background: var(--phone-bg);
+      border: 1px solid var(--line-strong);
+      border-radius: 28px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.08);
+      overflow: hidden;
+      position: relative;
+    }
+    .phone-header {
+      padding: 18px 20px 10px;
+      border-bottom: 1px solid var(--line);
+      display: flex; align-items: baseline; justify-content: space-between;
+    }
+    .phone-header h1 { font-size: 17px; margin: 0; letter-spacing: -0.01em; }
+    .phone-header .draft-status {
+      font-size: 12px; color: var(--ink-soft);
+    }
+    .phone-header .draft-status strong { color: var(--ink); font-weight: 600; }
+
+    .variant { display: none; }
+    .variant.active { display: block; }
+
+    .screen { padding: 18px 20px 100px; }
+    .screen h2 { font-size: 22px; margin: 4px 0 6px; letter-spacing: -0.01em; }
+    .screen p.lede { color: var(--ink-soft); margin: 0 0 16px; font-size: 14px; }
+
+    /* Big tappable entry buttons (variants A and C compact bar). */
+    .entry-grid { display: grid; gap: 10px; margin-top: 8px; }
+    .entry-btn {
+      appearance: none; border: 1px solid var(--line-strong); background: #fff;
+      border-radius: 14px; padding: 16px 16px; text-align: left;
+      font: inherit; color: var(--ink); cursor: pointer; min-height: 88px;
+      display: flex; flex-direction: column; gap: 4px; justify-content: center;
+    }
+    .entry-btn:hover { border-color: var(--accent); }
+    .entry-btn .glyph { font-size: 22px; }
+    .entry-btn .label { font-weight: 600; font-size: 15px; }
+    .entry-btn .sub { color: var(--ink-soft); font-size: 12px; }
+
+    /* Form bits used in all variants. */
+    label.field { display: block; margin: 0 0 12px; }
+    label.field > .field-label {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 12px; color: var(--ink-soft); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    input[type="text"], input[type="url"], textarea, select {
+      width: 100%; border: 1px solid var(--line-strong); background: #fff;
+      border-radius: 10px; padding: 10px 12px; font: inherit; color: var(--ink);
+    }
+    textarea { min-height: 64px; resize: vertical; }
+    .row { display: flex; gap: 8px; }
+    .row > * { flex: 1; }
+
+    /* Confidence badges. */
+    .badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge.ok   { background: var(--ok-soft);   color: var(--ok); }
+    .badge.warn { background: var(--warn-soft); color: var(--warn); }
+    .badge.bad  { background: var(--bad-soft);  color: var(--bad); }
+    .badge.muted{ background: #ece8de; color: var(--ink-soft); font-weight: 500; }
+
+    /* Per-ingredient line. */
+    .ing-line {
+      border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+      margin: 0 0 8px; display: flex; flex-direction: column; gap: 6px; background: #fdfcf8;
+    }
+    .ing-line .ing-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .ing-line .ing-text { font-size: 14px; }
+    .ing-line .ing-sub { display: flex; gap: 10px; font-size: 12px; color: var(--ink-soft); flex-wrap: wrap; }
+    .ing-line .ing-sub span b { color: var(--ink); font-weight: 600; }
+
+    .step-line {
+      display: flex; gap: 10px; align-items: flex-start;
+      border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+      margin: 0 0 8px; background: #fdfcf8;
+    }
+    .step-line .pos { font-weight: 700; color: var(--accent); min-width: 22px; }
+    .step-line .text { flex: 1; }
+
+    .tag-pill {
+      display: inline-block; padding: 4px 10px; border-radius: 999px;
+      background: var(--accent-soft); color: var(--accent); font-size: 12px; margin: 0 6px 6px 0;
+    }
+    .tag-pill.add { background: #ece8de; color: var(--ink-soft); }
+
+    /* Source drawer (raw JSON-LD / OCR text). */
+    details.source { margin-top: 8px; }
+    details.source > summary {
+      cursor: pointer; color: var(--ink-soft); font-size: 12px;
+      list-style: none; padding: 6px 0;
+    }
+    details.source > summary::-webkit-details-marker { display: none; }
+    details.source > summary::before { content: "▸ "; }
+    details.source[open] > summary::before { content: "▾ "; }
+    details.source pre {
+      background: #1f1d1a; color: #f6f4ee; padding: 12px; border-radius: 10px;
+      font-size: 12px; line-height: 1.45; overflow-x: auto; max-height: 240px; white-space: pre-wrap;
+    }
+
+    /* ---- Variant A — Stepper ---- */
+    .stepper-progress {
+      display: flex; align-items: center; gap: 6px; padding: 14px 20px 0;
+      font-size: 12px; color: var(--ink-soft);
+    }
+    .stepper-progress .pip {
+      flex: 1; height: 4px; background: var(--line); border-radius: 2px;
+    }
+    .stepper-progress .pip.done { background: var(--accent); }
+    .stepper-progress .step-label { margin-left: 6px; }
+    .stepper-nav {
+      display: flex; gap: 10px; margin-top: 18px; position: sticky; bottom: 0; background: #fff;
+      padding: 12px 0; border-top: 1px solid var(--line);
+    }
+    .btn {
+      appearance: none; border: 1px solid var(--line-strong); background: #fff;
+      border-radius: 999px; padding: 10px 18px; font: inherit; cursor: pointer;
+    }
+    .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .btn.ghost { background: transparent; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ---- Variant B — One long sheet ---- */
+    .sheet-tabs {
+      display: flex; gap: 4px; padding: 10px 14px 0; border-bottom: 1px solid var(--line);
+      position: sticky; top: 0; background: #fff; z-index: 2;
+    }
+    .sheet-tabs button {
+      flex: 1; appearance: none; border: none; background: transparent;
+      padding: 10px 6px; font: inherit; color: var(--ink-soft); cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+    .sheet-tabs button.active {
+      color: var(--ink); border-bottom-color: var(--accent); font-weight: 600;
+    }
+    .sheet-section { padding: 18px 20px; }
+    .progress-bar {
+      height: 6px; background: var(--line); border-radius: 3px; overflow: hidden;
+      margin: 8px 0 16px;
+    }
+    .progress-bar > span { display: block; height: 100%; background: var(--accent);
+      width: 0%; transition: width 0.3s ease; }
+    .sticky-save {
+      position: sticky; bottom: 0; background: #fff; padding: 12px 20px;
+      border-top: 1px solid var(--line); display: flex; align-items: center; gap: 10px;
+    }
+    .sticky-save .status { flex: 1; font-size: 12px; color: var(--ink-soft); }
+
+    /* ---- Variant C — Confidence-first cards ---- */
+    .compact-bar {
+      display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+      background: #faf6ec; border-bottom: 1px solid var(--line);
+    }
+    .compact-bar .icon { font-size: 16px; }
+    .compact-bar .label { font-size: 12px; color: var(--ink-soft); }
+    .compact-bar .src { font-size: 12px; color: var(--ink); font-weight: 600; }
+    .card {
+      border: 1px solid var(--line); border-radius: 14px; margin: 0 0 12px; overflow: hidden;
+      background: #fff;
+    }
+    .card.warn { border-color: var(--warn); }
+    .card.bad  { border-color: var(--bad); }
+    .card-head {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      padding: 10px 14px; cursor: pointer; user-select: none;
+    }
+    .card-head .title { font-weight: 600; }
+    .card-body { padding: 0 14px 12px; }
+    .card.collapsed .card-body { display: none; }
+    .card .note { font-size: 12px; color: var(--ink-soft); margin: 0 0 8px; }
+    .side-panel {
+      position: fixed; right: 12px; top: 80px; bottom: 96px; width: min(420px, calc(100vw - 24px));
+      background: #fff; border: 1px solid var(--line-strong); border-radius: 16px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.15);
+      padding: 16px; z-index: 20; display: none; overflow: auto;
+    }
+    .side-panel.open { display: block; }
+    .side-panel h3 { margin: 0 0 8px; font-size: 14px; }
+    .side-panel pre {
+      background: #1f1d1a; color: #f6f4ee; padding: 12px; border-radius: 10px;
+      font-size: 12px; line-height: 1.45; overflow: auto; max-height: 60vh; white-space: pre-wrap;
+    }
+
+    /* Floating variant switcher — visually obviously not part of the design. */
+    .switcher {
+      position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+      background: var(--pill-bg); color: var(--pill-ink);
+      border-radius: 999px; padding: 6px 10px;
+      display: flex; align-items: center; gap: 4px;
+      font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+      z-index: 30; user-select: none;
+    }
+    .switcher .sw-btn {
+      appearance: none; border: none; background: transparent; color: inherit;
+      font: inherit; cursor: pointer; padding: 4px 8px; border-radius: 999px;
+    }
+    .switcher .sw-btn:hover { background: rgba(255,255,255,0.08); }
+    .switcher .sw-label { padding: 0 6px; opacity: 0.85; }
+    .switcher .sw-tag {
+      background: rgba(255,255,255,0.12); padding: 2px 8px; border-radius: 999px;
+      font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;
+    }
+
+    /* Variant label in the switcher. */
+    .sw-key { font-weight: 700; }
+
+    /* Saved screen (variant A last step). */
+    .saved {
+      text-align: center; padding: 40px 20px;
+    }
+    .saved .check {
+      width: 56px; height: 56px; border-radius: 50%;
+      background: var(--ok-soft); color: var(--ok);
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 28px; margin-bottom: 12px;
+    }
+
+    /* Photo transient note. */
+    .transient-note {
+      font-size: 12px; color: var(--ink-soft); font-style: italic; margin: 4px 0 12px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .transient-note::before { content: "📷"; }
+
+    .fav-toggle {
+      display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+      font-size: 14px; user-select: none;
+    }
+    .fav-toggle input { display: none; }
+    .fav-toggle .star { font-size: 18px; color: var(--line-strong); }
+    .fav-toggle input:checked + .star { color: var(--accent); }
+
+    .hint { font-size: 11px; color: var(--ink-soft); margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div class="phone" id="phone">
+    <div class="phone-header">
+      <h1>New recipe</h1>
+      <div class="draft-status" id="draftStatus">Draft • 0 fields • 0 need eyes</div>
+    </div>
+
+    <!-- =================== VARIANT A — Stepper =================== -->
+    <section class="variant" data-variant="a" id="variant-a">
+      <div class="stepper-progress" id="stepperProgress">
+        <div class="pip" data-step="1"></div>
+        <div class="pip" data-step="2"></div>
+        <div class="pip" data-step="3"></div>
+        <div class="pip" data-step="4"></div>
+        <div class="step-label" id="stepLabel">1 · Add</div>
+      </div>
+
+      <!-- Step 1: Choose entry method -->
+      <div class="screen" data-screen="1">
+        <h2>Add a recipe</h2>
+        <p class="lede">Pick how you want to bring it in. Everything lands as a draft for review.</p>
+        <div class="entry-grid">
+          <button class="entry-btn" data-entry="url">
+            <span class="glyph">🔗</span>
+            <span class="label">Paste a public URL</span>
+            <span class="sub">Title, ingredients, steps parsed from the page</span>
+          </button>
+          <button class="entry-btn" data-entry="photo">
+            <span class="glyph">📷</span>
+            <span class="label">Snap a photo of a printout</span>
+            <span class="sub">Local OCR — the photo is read once and discarded</span>
+          </button>
+          <button class="entry-btn" data-entry="type">
+            <span class="glyph">✍️</span>
+            <span class="label">Type it in</span>
+            <span class="sub">Blank form, you fill every field</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Step 2: Capture input -->
+      <div class="screen" data-screen="2" hidden>
+        <h2 id="step2Title">Paste a URL</h2>
+        <p class="lede" id="step2Lede">We'll pull what we can. The rest is yours to fill.</p>
+        <div id="step2Body"></div>
+        <div class="stepper-nav">
+          <button class="btn ghost" data-action="back">Back</button>
+          <button class="btn primary" data-action="import" style="margin-left:auto">Review →</button>
+        </div>
+      </div>
+
+      <!-- Step 3: Review -->
+      <div class="screen" data-screen="3" hidden>
+        <h2>Review the draft</h2>
+        <p class="lede">Badges flag what we couldn't trust. Fix what needs fixing, or save the rest.</p>
+        <div id="reviewBody"></div>
+        <div class="stepper-nav">
+          <button class="btn ghost" data-action="back">Back</button>
+          <button class="btn" data-action="save-anyway" style="margin-left:auto">Save draft anyway</button>
+          <button class="btn primary" data-action="save">Save draft</button>
+        </div>
+      </div>
+
+      <!-- Step 4: Saved -->
+      <div class="screen" data-screen="4" hidden>
+        <div class="saved">
+          <div class="check">✓</div>
+          <h2>Draft saved</h2>
+          <p class="lede" id="savedSummary">1 recipe in your drafts.</p>
+        </div>
+        <div class="stepper-nav">
+          <button class="btn ghost" data-action="restart">Add another</button>
+          <button class="btn primary" data-action="restart" style="margin-left:auto">Done</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================== VARIANT B — One long sheet =================== -->
+    <section class="variant" data-variant="b" id="variant-b">
+      <div class="sheet-tabs" role="tablist">
+        <button class="active" data-tab="url">🔗 URL</button>
+        <button data-tab="photo">📷 Photo</button>
+        <button data-tab="type">✍️ Type</button>
+      </div>
+      <div class="sheet-section" id="sheet-url">
+        <h2>Paste a public URL</h2>
+        <p class="lede">JSON-LD parsed on device. Fields fill in as we go.</p>
+        <label class="field">
+          <span class="field-label">Source URL</span>
+          <input type="url" id="b-url" placeholder="https://…" value="https://example-food-blog.com/chicken-curry" />
+        </label>
+        <div class="progress-bar"><span id="b-url-progress"></span></div>
+        <div id="b-url-preview"></div>
+      </div>
+      <div class="sheet-section" id="sheet-photo" hidden>
+        <h2>Snap a photo of a printout</h2>
+        <p class="lede">We read it once, then the photo is gone.</p>
+        <div class="transient-note">photo discarded after import</div>
+        <button class="entry-btn" id="b-photo-btn" style="width:100%">
+          <span class="glyph">📷</span>
+          <span class="label">Capture photo</span>
+          <span class="sub">Triggers local OCR (Tesseract)</span>
+        </button>
+        <div class="progress-bar"><span id="b-photo-progress"></span></div>
+        <div id="b-photo-preview"></div>
+      </div>
+      <div class="sheet-section" id="sheet-type" hidden>
+        <h2>Type it in</h2>
+        <p class="lede">Blank form, all yours.</p>
+        <div id="b-type-form"></div>
+      </div>
+      <div class="sticky-save">
+        <div class="status" id="b-status">Draft • 0 fields • 0 need eyes</div>
+        <button class="btn" data-action="save-anyway">Save anyway</button>
+        <button class="btn primary" data-action="save">Save draft</button>
+      </div>
+    </section>
+
+    <!-- =================== VARIANT C — Confidence-first cards =================== -->
+    <section class="variant" data-variant="c" id="variant-c">
+      <div class="compact-bar" id="c-bar">
+        <span class="icon">🔗</span>
+        <span class="label">Source</span>
+        <span class="src" id="c-bar-src">https://example-food-blog.com/chicken-curry</span>
+        <button class="btn ghost" id="c-change" style="margin-left:auto;padding:4px 10px">Change</button>
+      </div>
+      <div class="screen" id="c-cards">
+        <!-- Cards injected by JS. -->
+      </div>
+      <div class="sticky-save">
+        <div class="status" id="c-status">Draft • 9 fields • 2 need eyes</div>
+        <button class="btn" data-action="toggle-source">View source</button>
+        <button class="btn primary" data-action="save">Save draft</button>
+      </div>
+      <div class="side-panel" id="c-source-panel">
+        <h3 id="c-source-title">Raw JSON-LD</h3>
+        <pre id="c-source-body"></pre>
+        <button class="btn" data-action="toggle-source" style="margin-top:10px">Close</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- Floating switcher (not part of the design) -->
+  <div class="switcher" id="switcher" role="group" aria-label="Variant switcher (prototype only)">
+    <button class="sw-btn" data-switch="prev" aria-label="Previous variant">◀</button>
+    <span class="sw-label">variant</span>
+    <span class="sw-tag"><span class="sw-key" id="swKey">a</span></span>
+    <button class="sw-btn" data-switch="next" aria-label="Next variant">▶</button>
+    <span class="sw-tag" style="background:rgba(255,255,255,0.04)">←/→</span>
+  </div>
+
+  <script>
+  (function () {
+    'use strict';
+
+    // ---------- Stub recipe (used by URL and photo paths) ----------
+    const STUB = {
+      title: 'Skillet Chicken Curry',
+      category: 'one-dish',
+      tags: ['weeknight', 'curry'],
+      sourceType: 'url',
+      sourceUrl: 'https://example-food-blog.com/chicken-curry',
+      totalTime: null,          // missing — flagged ✗
+      prepTime: '10 min',
+      cookTime: '25 min',
+      servings: 4,
+      image: 'https://example-food-blog.com/chicken-curry.jpg',
+      ingredients: [
+        { text: '1 lb chicken thighs',         qty: '1 lb',         unit: 'lb',  item: 'chicken thighs',     note: '',         confidence: 'ok'   },
+        { text: '2-3 cloves garlic, minced',   qty: '2-3',          unit: '',    item: 'cloves garlic',      note: 'minced',   confidence: 'ok'   },
+        { text: 'a pinch of salt',             qty: '',             unit: '',    item: 'salt',               note: 'a pinch',  confidence: 'warn' },
+        { text: '1 can (14 oz) coconut milk',  qty: '1 can (14 oz)',unit: 'can', item: 'coconut milk',       note: '',         confidence: 'ok'   }
+      ],
+      steps: [
+        { position: 1, text: 'Pat the chicken dry and cut into bite-size pieces.' },
+        { position: 2, text: 'Sauté garlic in a splash of oil until fragrant, about 30 seconds.' },
+        { position: 3, text: 'Add chicken, coconut milk, and salt. Simmer 20 minutes until cooked through.' }
+      ],
+      favorite: false,
+      // Raw JSON-LD that the URL import "found" — used for the "view source" toggle.
+      rawJsonLd: {
+        '@context': 'https://schema.org',
+        '@type': 'Recipe',
+        'name': 'Skillet Chicken Curry',
+        'recipeCategory': 'Main Course',
+        'recipeIngredient': [
+          '1 lb chicken thighs',
+          '2-3 cloves garlic, minced',
+          'a pinch of salt',
+          '1 can (14 oz) coconut milk'
+        ],
+        'recipeInstructions': [
+          { '@type': 'HowToStep', 'text': 'Pat the chicken dry and cut into bite-size pieces.' },
+          { '@type': 'HowToStep', 'text': 'Sauté garlic in a splash of oil until fragrant, about 30 seconds.' },
+          { '@type': 'HowToStep', 'text': 'Add chicken, coconut milk, and salt. Simmer 20 minutes until cooked through.' }
+        ]
+        // note: no totalTime / cookTime in source
+      }
+    };
+
+    // Raw OCR text the photo path would yield.
+    const RAW_OCR = `Skillet Chicken Curry
+
+  1 lb chicken thighs
+  2-3 cloves garlic, minced
+  a pinch of salt
+  1 can (14 oz) coconut milk
+
+  1. Pat the chicken dry...
+  2. Saute garlic...
+  3. Add chicken, coconut milk, salt...`;
+
+    const CATEGORIES = ['one-dish','soup','salad','bread','dessert','cookies','cake','pie','other'];
+
+    // ---------- Mutable draft state (in-memory) ----------
+    const state = {
+      variant: 'a',
+      aStep: 1,
+      aEntry: null,           // 'url' | 'photo' | 'type'
+      draft: blankDraft(),
+      photoImported: false,
+      bTab: 'url',
+      cShowSource: false
+    };
+    function blankDraft() {
+      return {
+        title: '',
+        category: 'one-dish',
+        tags: [],
+        sourceType: 'manual',
+        sourceUrl: '',
+        totalTime: '',
+        prepTime: '',
+        cookTime: '',
+        servings: '',
+        image: '',
+        ingredients: [
+          { text: '', qty: '', unit: '', item: '', note: '', confidence: 'bad' }
+        ],
+        steps: [
+          { position: 1, text: '' }
+        ],
+        favorite: false,
+        raw: null
+      };
+    }
+    function loadStub(sourceType) {
+      const d = blankDraft();
+      d.title       = STUB.title;
+      d.category    = STUB.category;
+      d.tags        = STUB.tags.slice();
+      d.sourceType  = sourceType;
+      d.sourceUrl   = sourceType === 'url' ? STUB.sourceUrl : '';
+      d.totalTime   = STUB.totalTime;   // null → ✗
+      d.prepTime    = STUB.prepTime;    // ✓
+      d.cookTime    = STUB.cookTime;    // ✓
+      d.servings    = STUB.servings;    // ✓
+      d.image       = STUB.image;       // ✓
+      d.ingredients = STUB.ingredients.map(i => Object.assign({}, i));
+      d.steps       = STUB.steps.map(s => Object.assign({}, s));
+      d.favorite    = STUB.favorite;
+      d.raw         = sourceType === 'url' ? JSON.stringify(STUB.rawJsonLd, null, 2) : RAW_OCR;
+      return d;
+    }
+
+    // ---------- Per-field confidence ----------
+    // ok = extracted confidently, warn = needs eyes, bad = missing.
+    function fieldConf(value) {
+      if (value === null || value === undefined) return 'bad';
+      if (typeof value === 'string' && value.trim() === '') return 'bad';
+      return 'ok';
+    }
+    function ingLineConf(ing) {
+      if (!ing || !ing.text || !ing.text.trim()) return 'bad';
+      // "no quantity detected" → warn even if text is present
+      if (!ing.qty || !ing.qty.trim()) return 'warn';
+      return 'ok';
+    }
+    function badgeFor(level) {
+      if (level === 'ok')   return '<span class="badge ok">✓ extracted</span>';
+      if (level === 'warn') return '<span class="badge warn">⚠ needs eyes</span>';
+      return '<span class="badge bad">✗ missing</span>';
+    }
+    function ingLineBadge(ing) {
+      if (!ing.text || !ing.text.trim()) return '<span class="badge bad">✗ empty</span>';
+      if (ingLineConf(ing) === 'warn')    return '<span class="badge warn">⚠ no quantity detected</span>';
+      return '<span class="badge ok">✓ qty + unit parsed</span>';
+    }
+
+    // ---------- Draft status summary ----------
+    function countNeedEyes(d) {
+      const fields = [
+        fieldConf(d.title), fieldConf(d.category), fieldConf(d.totalTime),
+        fieldConf(d.prepTime), fieldConf(d.cookTime), fieldConf(d.servings),
+        fieldConf(d.image)
+      ];
+      let need = fields.filter(f => f === 'warn').length;
+      need += d.ingredients.filter(i => ingLineConf(i) === 'warn').length;
+      const total = fields.length + d.ingredients.length + d.steps.length;
+      return { total, need };
+    }
+    function refreshStatus() {
+      const d = state.draft;
+      const { total, need } = countNeedEyes(d);
+      const s = `Draft • ${total} fields • ${need} need eyes`;
+      const el = document.getElementById('draftStatus');
+      if (el) el.innerHTML = `<strong>Draft</strong> • ${total} fields • <strong>${need} need eyes</strong>`;
+      const b = document.getElementById('b-status');
+      if (b) b.innerHTML = `<strong>Draft</strong> • ${total} fields • <strong>${need} need eyes</strong>`;
+      const c = document.getElementById('c-status');
+      if (c) c.innerHTML = `<strong>Draft</strong> • ${total} fields • <strong>${need} need eyes</strong>`;
+    }
+
+    // ---------- Variant switching ----------
+    function applyVariant(v) {
+      state.variant = v;
+      document.querySelectorAll('.variant').forEach(el => {
+        el.classList.toggle('active', el.dataset.variant === v);
+      });
+      document.getElementById('swKey').textContent = v;
+      const url = new URL(window.location.href);
+      url.searchParams.set('variant', v);
+      history.replaceState(null, '', url.toString());
+      // Re-render the visible variant from current state.
+      if (v === 'a') renderA();
+      if (v === 'b') renderB();
+      if (v === 'c') renderC();
+    }
+    function cycleVariant(dir) {
+      const order = ['a', 'b', 'c'];
+      const i = order.indexOf(state.variant);
+      const next = order[(i + dir + order.length) % order.length];
+      applyVariant(next);
+    }
+
+    // ---------- Variant A: Stepper ----------
+    function renderA() {
+      const a = document.getElementById('variant-a');
+      // Progress pips.
+      const pips = a.querySelectorAll('.pip');
+      const stepNames = ['1 · Add', '2 · Get it', '3 · Review', '4 · Saved'];
+      pips.forEach((p, i) => p.classList.toggle('done', i + 1 <= state.aStep));
+      a.querySelector('#stepLabel').textContent = stepNames[state.aStep - 1] || '';
+
+      // Screens.
+      a.querySelectorAll('[data-screen]').forEach(s => {
+        s.hidden = parseInt(s.dataset.screen, 10) !== state.aStep;
+      });
+
+      // Step 2 body depends on entry choice.
+      if (state.aStep === 2) {
+        const body = a.querySelector('#step2Body');
+        body.innerHTML = '';
+        if (state.aEntry === 'url') {
+          a.querySelector('#step2Title').textContent = 'Paste a public URL';
+          a.querySelector('#step2Lede').textContent = "We'll fetch and parse JSON-LD on device. Missing fields are flagged in review.";
+          body.innerHTML = `
+            <label class="field">
+              <span class="field-label">Source URL</span>
+              <input type="url" id="a-url" placeholder="https://…" value="${escapeHtml(STUB.sourceUrl)}" />
+            </label>
+            <div class="hint">Simulated parse — fields fill on Review step.</div>
+          `;
+        } else if (state.aEntry === 'photo') {
+          a.querySelector('#step2Title').textContent = 'Snap a photo of a printout';
+          a.querySelector('#step2Lede').textContent = 'Local OCR. The photo is read once and discarded — never stored.';
+          body.innerHTML = `
+            <div class="transient-note">photo discarded after import</div>
+            <button class="entry-btn" id="a-photo" style="width:100%">
+              <span class="glyph">📷</span>
+              <span class="label">Capture photo</span>
+              <span class="sub">Tesseract runs locally; nothing is uploaded</span>
+            </button>
+            <div class="hint">Simulated — no camera is actually invoked.</div>
+          `;
+          body.querySelector('#a-photo').addEventListener('click', () => {
+            state.photoImported = true;
+            state.draft = loadStub('scan');
+            // Move to review after import.
+            state.aStep = 3;
+            renderA();
+          });
+        } else {
+          a.querySelector('#step2Title').textContent = 'Type it in';
+          a.querySelector('#step2Lede').textContent = 'Blank form, you fill every field. You can also save the empty draft as a placeholder.';
+          body.innerHTML = `<p class="hint">Nothing to do here — head to Review to fill the form.</p>`;
+          // Type path lands on a blank draft immediately.
+          state.draft = blankDraft();
+          state.draft.sourceType = 'manual';
+        }
+      }
+
+      if (state.aStep === 3) {
+        renderReviewInto(a.querySelector('#reviewBody'));
+      }
+
+      refreshStatus();
+    }
+
+    // Shared review renderer used by A and (partially) C.
+    function renderReviewInto(container) {
+      const d = state.draft;
+      const ingHtml = d.ingredients.map((ing, i) => `
+        <div class="ing-line" data-idx="${i}">
+          <div class="ing-head">
+            <input type="text" class="ing-text-input" value="${escapeAttr(ing.text)}" placeholder="e.g. 1 lb chicken thighs" />
+            ${ingLineBadge(ing)}
+          </div>
+          <div class="ing-sub">
+            <span>qty: <b>${escapeHtml(ing.qty || '—')}</b></span>
+            <span>unit: <b>${escapeHtml(ing.unit || '—')}</b></span>
+            <span>item: <b>${escapeHtml(ing.item || '—')}</b></span>
+            <span>note: <b>${escapeHtml(ing.note || '—')}</b></span>
+          </div>
+        </div>
+      `).join('');
+      const stepHtml = d.steps.map((s, i) => `
+        <div class="step-line" data-step-idx="${i}">
+          <div class="pos">${s.position}.</div>
+          <textarea class="step-text" placeholder="Describe this step…">${escapeHtml(s.text)}</textarea>
+        </div>
+      `).join('');
+      const tagHtml = (d.tags.length ? d.tags.map(t => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('') : '')
+        + `<span class="tag-pill add">+ add tag</span>`;
+      const categoryOptions = CATEGORIES.map(c =>
+        `<option value="${c}"${c === d.category ? ' selected' : ''}>${c}</option>`).join('');
+
+      container.innerHTML = `
+        <label class="field">
+          <span class="field-label">Title ${badgeFor(fieldConf(d.title))}</span>
+          <input type="text" id="rv-title" value="${escapeAttr(d.title)}" placeholder="Recipe title" />
+        </label>
+        <label class="field">
+          <span class="field-label">Category ${badgeFor(fieldConf(d.category))}</span>
+          <select id="rv-category">${categoryOptions}</select>
+        </label>
+        <label class="field">
+          <span class="field-label">Tags ${d.tags.length ? '<span class="badge ok">✓ ' + d.tags.length + '</span>' : '<span class="badge bad">✗ none</span>'}</span>
+          <div>${tagHtml}</div>
+        </label>
+        <div class="row">
+          <label class="field"><span class="field-label">Prep ${badgeFor(fieldConf(d.prepTime))}</span>
+            <input type="text" id="rv-prep" value="${escapeAttr(d.prepTime)}" placeholder="e.g. 10 min" /></label>
+          <label class="field"><span class="field-label">Cook ${badgeFor(fieldConf(d.cookTime))}</span>
+            <input type="text" id="rv-cook" value="${escapeAttr(d.cookTime)}" placeholder="e.g. 25 min" /></label>
+        </div>
+        <div class="row">
+          <label class="field"><span class="field-label">Total ${badgeFor(fieldConf(d.totalTime))}</span>
+            <input type="text" id="rv-total" value="${escapeAttr(d.totalTime || '')}" placeholder="e.g. 35 min" /></label>
+          <label class="field"><span class="field-label">Servings ${badgeFor(fieldConf(d.servings))}</span>
+            <input type="text" id="rv-serv" value="${escapeAttr(d.servings)}" placeholder="e.g. 4" /></label>
+        </div>
+        <label class="field">
+          <span class="field-label">Image URL ${badgeFor(fieldConf(d.image))}</span>
+          <input type="url" id="rv-image" value="${escapeAttr(d.image)}" placeholder="https://…" />
+        </label>
+
+        <label class="field">
+          <span class="field-label">Ingredient lines ${d.ingredients.length ? '<span class="badge ok">✓ ' + d.ingredients.length + '</span>' : '<span class="badge bad">✗ none</span>'}</span>
+        </label>
+        <div id="rv-ings">${ingHtml}</div>
+        <button class="btn ghost" id="rv-add-ing" style="margin-bottom:14px">+ Add ingredient</button>
+
+        <label class="field">
+          <span class="field-label">Steps ${d.steps.length ? '<span class="badge ok">✓ ' + d.steps.length + '</span>' : '<span class="badge bad">✗ none</span>'}</span>
+        </label>
+        <div id="rv-steps">${stepHtml}</div>
+        <button class="btn ghost" id="rv-add-step" style="margin-bottom:14px">+ Add step</button>
+
+        <label class="fav-toggle">
+          <input type="checkbox" id="rv-fav" ${d.favorite ? 'checked' : ''} />
+          <span class="star">★</span>
+          <span>Favorite</span>
+        </label>
+
+        <details class="source">
+          <summary>View source (raw JSON-LD / OCR text)</summary>
+          <pre>${escapeHtml(d.raw || '(no source)')}</pre>
+        </details>
+      `;
+      bindReviewInputs(container);
+    }
+
+    function bindReviewInputs(container) {
+      const d = state.draft;
+      const t = container.querySelector('#rv-title');
+      if (t) t.addEventListener('input', e => { d.title = e.target.value; refreshStatus(); });
+      const c = container.querySelector('#rv-category');
+      if (c) c.addEventListener('change', e => { d.category = e.target.value; refreshStatus(); });
+      const bind = (sel, key) => {
+        const el = container.querySelector(sel);
+        if (el) el.addEventListener('input', e => { d[key] = e.target.value; refreshStatus(); });
+      };
+      bind('#rv-prep', 'prepTime');
+      bind('#rv-cook', 'cookTime');
+      bind('#rv-total', 'totalTime');
+      bind('#rv-serv', 'servings');
+      bind('#rv-image', 'image');
+      const f = container.querySelector('#rv-fav');
+      if (f) f.addEventListener('change', e => { d.favorite = e.target.checked; });
+      container.querySelectorAll('.ing-text-input').forEach(el => {
+        el.addEventListener('input', e => {
+          const i = parseInt(e.target.closest('.ing-line').dataset.idx, 10);
+          d.ingredients[i].text = e.target.value;
+        });
+      });
+      container.querySelectorAll('.step-text').forEach(el => {
+        el.addEventListener('input', e => {
+          const i = parseInt(e.target.closest('.step-line').dataset.stepIdx, 10);
+          d.steps[i].text = e.target.value;
+        });
+      });
+      const ai = container.querySelector('#rv-add-ing');
+      if (ai) ai.addEventListener('click', () => {
+        d.ingredients.push({ text: '', qty: '', unit: '', item: '', note: '', confidence: 'bad' });
+        renderReviewInto(container); refreshStatus();
+      });
+      const as_ = container.querySelector('#rv-add-step');
+      if (as_) as_.addEventListener('click', () => {
+        d.steps.push({ position: d.steps.length + 1, text: '' });
+        renderReviewInto(container); refreshStatus();
+      });
+    }
+
+    function bindVariantA() {
+      const a = document.getElementById('variant-a');
+      a.addEventListener('click', e => {
+        const entry = e.target.closest('[data-entry]');
+        if (entry) {
+          state.aEntry = entry.dataset.entry;
+          if (state.aEntry === 'type') {
+            state.draft = blankDraft();
+            state.draft.sourceType = 'manual';
+            state.aStep = 3;
+          } else if (state.aEntry === 'url') {
+            // prefill url field — actual parse happens when user clicks "Review"
+            state.draft = blankDraft();
+            state.draft.sourceType = 'url';
+            state.draft.sourceUrl = STUB.sourceUrl;
+            state.aStep = 2;
+          } else {
+            state.aStep = 2;
+          }
+          renderA();
+          return;
+        }
+        const act = e.target.closest('[data-action]');
+        if (!act) return;
+        const action = act.dataset.action;
+        if (action === 'back') {
+          if (state.aStep === 3 && (state.aEntry === 'type' || state.photoImported)) {
+            state.aStep = state.aEntry === 'type' ? 1 : 2;
+          } else {
+            state.aStep = Math.max(1, state.aStep - 1);
+          }
+          renderA();
+        } else if (action === 'import') {
+          // For URL: simulate parse, load stub.
+          if (state.aEntry === 'url') {
+            state.draft = loadStub('url');
+          } else if (state.aEntry === 'photo' && !state.photoImported) {
+            // User didn't snap yet — nudge.
+            alert('Capture a photo first (simulated).');
+            return;
+          }
+          state.aStep = 3;
+          renderA();
+        } else if (action === 'save' || action === 'save-anyway') {
+          // In-memory only. No persistence.
+          state.aStep = 4;
+          renderA();
+        } else if (action === 'restart') {
+          state.aStep = 1;
+          state.aEntry = null;
+          state.photoImported = false;
+          state.draft = blankDraft();
+          renderA();
+        }
+      });
+    }
+
+    // ---------- Variant B: One long sheet ----------
+    function renderB() {
+      const b = document.getElementById('variant-b');
+      b.querySelectorAll('.sheet-tabs button').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === state.bTab);
+      });
+      ['url', 'photo', 'type'].forEach(t => {
+        b.querySelector('#sheet-' + t).hidden = (t !== state.bTab);
+      });
+
+      // URL tab — auto-parse on load (simulated)
+      if (state.bTab === 'url') {
+        const u = b.querySelector('#b-url');
+        if (u && !u.dataset.bound) {
+          u.dataset.bound = '1';
+          u.addEventListener('input', () => {
+            const bar = b.querySelector('#b-url-progress');
+            bar.style.width = '0%';
+            simulateProgress(bar, () => {
+              state.draft = loadStub('url');
+              renderBUrlPreview();
+              refreshStatus();
+            });
+          });
+          // trigger initial fill
+          simulateProgress(b.querySelector('#b-url-progress'), () => {
+            state.draft = loadStub('url');
+            renderBUrlPreview();
+            refreshStatus();
+          });
+        }
+      }
+
+      if (state.bTab === 'photo') {
+        const btn = b.querySelector('#b-photo-btn');
+        if (btn && !btn.dataset.bound) {
+          btn.dataset.bound = '1';
+          btn.addEventListener('click', () => {
+            const bar = b.querySelector('#b-photo-progress');
+            bar.style.width = '0%';
+            simulateProgress(bar, () => {
+              state.draft = loadStub('scan');
+              renderBPhotoPreview();
+              refreshStatus();
+            }, 1600);
+          });
+        }
+      }
+
+      if (state.bTab === 'type') {
+        renderBTypeForm();
+      }
+
+      refreshStatus();
+    }
+    function renderBUrlPreview() {
+      const d = state.draft;
+      const host = document.getElementById('b-url-preview');
+      host.innerHTML = `
+        <div class="card collapsed ok" style="border-radius:14px;border:1px solid var(--line);padding:12px 14px;margin-top:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div><b>${escapeHtml(d.title)}</b> <span class="badge ok" style="margin-left:6px">✓ parsed</span></div>
+            <span style="color:var(--ink-soft);font-size:12px">${d.ingredients.length} ingredients · ${d.steps.length} steps</span>
+          </div>
+        </div>
+        ${bInlineReview(d)}
+      `;
+    }
+    function renderBPhotoPreview() {
+      const d = state.draft;
+      const host = document.getElementById('b-photo-preview');
+      host.innerHTML = `
+        <div class="transient-note">photo discarded after import</div>
+        ${bInlineReview(d)}
+      `;
+    }
+    function bInlineReview(d) {
+      const ingHtml = d.ingredients.map(ing => `
+        <div class="ing-line">
+          <div class="ing-head">
+            <span class="ing-text">${escapeHtml(ing.text || '—')}</span>
+            ${ingLineBadge(ing)}
+          </div>
+          <div class="ing-sub">
+            <span>qty: <b>${escapeHtml(ing.qty || '—')}</b></span>
+            <span>unit: <b>${escapeHtml(ing.unit || '—')}</b></span>
+          </div>
+        </div>`).join('');
+      const stepHtml = d.steps.map(s => `<li>${escapeHtml(s.text)}</li>`).join('');
+      return `
+        <div style="margin-top:12px">
+          <label class="field"><span class="field-label">Title ${badgeFor(fieldConf(d.title))}</span>
+            <input type="text" value="${escapeAttr(d.title)}" readonly /></label>
+          <label class="field"><span class="field-label">Category ${badgeFor(fieldConf(d.category))}</span>
+            <input type="text" value="${escapeAttr(d.category)}" readonly /></label>
+          <label class="field"><span class="field-label">Total time ${badgeFor(fieldConf(d.totalTime))}</span>
+            <input type="text" value="${escapeAttr(d.totalTime || '')}" readonly placeholder="missing — flagged" /></label>
+          <div style="font-size:12px;color:var(--ink-soft);margin:8px 0 4px;text-transform:uppercase;letter-spacing:0.05em">Ingredients</div>
+          ${ingHtml}
+          <div style="font-size:12px;color:var(--ink-soft);margin:8px 0 4px;text-transform:uppercase;letter-spacing:0.05em">Steps</div>
+          <ol style="padding-left:18px;margin:0">${stepHtml}</ol>
+          <details class="source">
+            <summary>View source (raw JSON-LD / OCR text)</summary>
+            <pre>${escapeHtml(d.raw || '(no source)')}</pre>
+          </details>
+        </div>
+      `;
+    }
+    function renderBTypeForm() {
+      const host = document.getElementById('b-type-form');
+      if (!host) return;
+      if (host.dataset.rendered === '1') return;
+      host.dataset.rendered = '1';
+      host.innerHTML = `
+        <label class="field"><span class="field-label">Title ${badgeFor('bad')}</span>
+          <input type="text" placeholder="Recipe title" /></label>
+        <label class="field"><span class="field-label">Category ${badgeFor('ok')}</span>
+          <select>${CATEGORIES.map(c => `<option>${c}</option>`).join('')}</select></label>
+        <label class="field"><span class="field-label">Tags ${'<span class="badge bad">✗ none</span>'}</span>
+          <input type="text" placeholder="weeknight, curry" /></label>
+        <label class="field"><span class="field-label">Ingredients ${'<span class="badge bad">✗ none</span>'}</span>
+          <textarea placeholder="1 lb chicken thighs&#10;2-3 cloves garlic, minced"></textarea></label>
+        <label class="field"><span class="field-label">Steps ${'<span class="badge bad">✗ none</span>'}</span>
+          <textarea placeholder="Step 1…&#10;Step 2…"></textarea></label>
+        <details class="source"><summary>View source</summary><pre>(manual entry — no source)</pre></details>
+      `;
+    }
+    function simulateProgress(barEl, done, ms) {
+      ms = ms || 900;
+      const start = Date.now();
+      const tick = () => {
+        const pct = Math.min(100, ((Date.now() - start) / ms) * 100);
+        if (barEl) barEl.style.width = pct + '%';
+        if (pct < 100) requestAnimationFrame(tick);
+        else done && done();
+      };
+      requestAnimationFrame(tick);
+    }
+    function bindVariantB() {
+      const b = document.getElementById('variant-b');
+      b.querySelector('.sheet-tabs').addEventListener('click', e => {
+        const btn = e.target.closest('button[data-tab]');
+        if (!btn) return;
+        state.bTab = btn.dataset.tab;
+        renderB();
+      });
+      b.addEventListener('click', e => {
+        const act = e.target.closest('[data-action]');
+        if (!act) return;
+        if (act.dataset.action === 'save' || act.dataset.action === 'save-anyway') {
+          // In-memory save confirmation.
+          alert('Draft saved (in-memory — no persistence in this prototype).');
+        }
+      });
+    }
+
+    // ---------- Variant C: Confidence-first cards ----------
+    function renderC() {
+      const c = document.getElementById('variant-c');
+      const d = state.draft;
+      // Compact bar
+      document.getElementById('c-bar-src').textContent =
+        d.sourceType === 'manual' ? '(manual entry)' :
+        d.sourceType === 'scan'   ? '📷 photo (discarded)' :
+        d.sourceUrl || '(no source)';
+      // Build cards: one per logical group, expand if it has a warn/bad field.
+      const cards = [
+        card('Identity', [
+          { label: 'Title',     conf: fieldConf(d.title),    val: d.title,    key: 'title' },
+          { label: 'Category',  conf: fieldConf(d.category), val: d.category, key: 'category' }
+        ]),
+        card('Tags', d.tags.length
+          ? [{ label: 'Tags', conf: 'ok', val: d.tags.join(', '), key: 'tags' }]
+          : [{ label: 'Tags', conf: 'bad', val: '', key: 'tags' }]
+        ),
+        card('Time & servings', [
+          { label: 'Prep',     conf: fieldConf(d.prepTime),  val: d.prepTime  || '', key: 'prepTime' },
+          { label: 'Cook',     conf: fieldConf(d.cookTime),  val: d.cookTime  || '', key: 'cookTime' },
+          { label: 'Total',    conf: fieldConf(d.totalTime), val: d.totalTime || '', key: 'totalTime' },
+          { label: 'Servings', conf: fieldConf(d.servings),  val: d.servings  || '', key: 'servings' }
+        ]),
+        card('Ingredients', d.ingredients.map((ing, i) => ({
+          label: 'Line ' + (i + 1),
+          conf: ingLineConf(ing),
+          val: ing.text,
+          key: 'ingredients',
+          idx: i
+        }))),
+        card('Steps', d.steps.map((s, i) => ({
+          label: 'Step ' + s.position,
+          conf: fieldConf(s.text),
+          val: s.text,
+          key: 'steps',
+          idx: i
+        })))
+      ];
+
+      // Source panel
+      document.getElementById('c-source-title').textContent =
+        d.sourceType === 'url' ? 'Raw JSON-LD' :
+        d.sourceType === 'scan' ? 'Raw OCR text' : 'Source';
+      document.getElementById('c-source-body').textContent = d.raw || '(manual entry — no source)';
+      document.getElementById('c-source-panel').classList.toggle('open', state.cShowSource);
+
+      const host = document.getElementById('c-cards');
+      host.innerHTML = cards.join('');
+      // Click handlers: toggle collapsed / open source panel.
+      host.querySelectorAll('.card-head').forEach(h => {
+        h.addEventListener('click', () => {
+          h.parentElement.classList.toggle('collapsed');
+        });
+      });
+      document.getElementById('c-change').onclick = () => {
+        state.draft = blankDraft();
+        state.draft.sourceType = 'manual';
+        renderC();
+      };
+      refreshStatus();
+    }
+    function card(title, fields) {
+      // Card is collapsed if every field is ok and not the Identity/Ingredients/Steps group.
+      const isCollapsible = title === 'Time & servings' || title === 'Tags';
+      const allOk = fields.every(f => f.conf === 'ok');
+      const collapsed = isCollapsible && allOk;
+      const cls = ['card'];
+      if (fields.some(f => f.conf === 'warn')) cls.push('warn');
+      if (fields.some(f => f.conf === 'bad') && !fields.some(f => f.conf === 'ok')) cls.push('bad');
+      if (collapsed) cls.push('collapsed');
+      const rows = fields.map(f => `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)">
+          <div>
+            <div style="font-size:12px;color:var(--ink-soft)">${escapeHtml(f.label)}</div>
+            <div style="font-size:14px">${escapeHtml(f.val || (f.conf === 'bad' ? '— missing —' : ''))}</div>
+          </div>
+          ${badgeFor(f.conf)}
+        </div>
+      `).join('');
+      return `
+        <div class="${cls.join(' ')}">
+          <div class="card-head">
+            <span class="title">${escapeHtml(title)}</span>
+            <span class="badge ${allOk ? 'ok' : (fields.some(f => f.conf === 'bad') && !fields.some(f => f.conf === 'ok')) ? 'bad' : 'warn'}">
+              ${allOk ? '✓ all good' : fields.filter(f => f.conf !== 'ok').length + ' need eyes'}
+            </span>
+          </div>
+          <div class="card-body">${rows || '<div class="note">Nothing here yet.</div>'}</div>
+        </div>
+      `;
+    }
+    function bindVariantC() {
+      const c = document.getElementById('variant-c');
+      c.addEventListener('click', e => {
+        const act = e.target.closest('[data-action]');
+        if (!act) return;
+        if (act.dataset.action === 'toggle-source') {
+          state.cShowSource = !state.cShowSource;
+          document.getElementById('c-source-panel').classList.toggle('open', state.cShowSource);
+        } else if (act.dataset.action === 'save' || act.dataset.action === 'save-anyway') {
+          alert('Draft saved (in-memory — no persistence in this prototype).');
+        }
+      });
+    }
+
+    // ---------- Utilities ----------
+    function escapeHtml(s) {
+      if (s === null || s === undefined) return '';
+      return String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function escapeAttr(s) { return escapeHtml(s); }
+
+    // ---------- Init ----------
+    function init() {
+      // Read ?variant=
+      const params = new URLSearchParams(window.location.search);
+      const v = params.get('variant');
+      state.variant = (v === 'a' || v === 'b' || v === 'c') ? v : 'a';
+
+      // Preload stub for URL path so the sheet variant has something to show.
+      state.draft = blankDraft();
+
+      bindVariantA();
+      bindVariantB();
+      bindVariantC();
+
+      applyVariant(state.variant);
+
+      // Switcher buttons
+      document.querySelectorAll('.switcher [data-switch]').forEach(b => {
+        b.addEventListener('click', () => {
+          cycleVariant(b.dataset.switch === 'next' ? 1 : -1);
+        });
+      });
+
+      // Keyboard cycling ←/→ unless typing in an input/textarea/select/contenteditable.
+      document.addEventListener('keydown', e => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        const t = e.target;
+        const tag = (t && t.tagName) || '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (t && t.isContentEditable) return;
+        cycleVariant(e.key === 'ArrowRight' ? 1 : -1);
+        e.preventDefault();
+      });
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  })();
+  </script>
+</body>
+</html>
