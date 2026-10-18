@@ -118,7 +118,43 @@ export function pickStringArray(value: unknown): string[] {
   return [];
 }
 
-/** Pull an image URL out of the various shapes JSON-LD allows. */
+/**
+ * recipeInstructions is the messiest field in the spec: a plain string, an
+ * array of strings, `HowToStep` objects (`{ text }`), or `HowToSection`
+ * objects that nest their steps under `itemListElement`. Flatten every shape
+ * into ordered step strings.
+ */
+export function pickInstructionTexts(value: unknown): string[] {
+  if (typeof value === "string") {
+    const t = value.trim();
+    return t.length === 0 ? [] : [t];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((v) => pickInstructionTexts(v));
+  }
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    if (obj["itemListElement"] !== undefined) {
+      return pickInstructionTexts(obj["itemListElement"]);
+    }
+    const text = pickString(obj["text"]) ?? pickString(obj["name"]);
+    return text ? [text] : [];
+  }
+  return [];
+}
+
+/**
+ * `keywords` is a comma-separated string on most sites and an array of
+ * strings on some. Return one entry per keyword, trimmed and non-empty.
+ */
+export function pickKeywords(value: unknown): string[] {
+  return pickStringArray(value)
+    .flatMap((entry) => entry.split(","))
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+/** Pick an image URL out of the various shapes JSON-LD allows. */
 export function pickImage(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value === "string") return value || null;

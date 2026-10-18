@@ -9,6 +9,8 @@ import {
   extractJsonLd,
   pickDurationMin,
   pickImage,
+  pickInstructionTexts,
+  pickKeywords,
   pickString,
   pickStringArray,
 } from "./url-parse";
@@ -142,5 +144,57 @@ describe("pickDurationMin", () => {
   });
   it("returns the raw text for non-ISO inputs", () => {
     expect(pickDurationMin("about an hour")).toBe("about an hour");
+  });
+});
+
+describe("pickInstructionTexts", () => {
+  it("handles a plain string", () => {
+    expect(pickInstructionTexts("Stir.")).toEqual(["Stir."]);
+  });
+  it("handles an array of strings", () => {
+    expect(pickInstructionTexts(["One.", "Two."])).toEqual(["One.", "Two."]);
+  });
+  it("handles HowToStep objects (the common JSON-LD shape)", () => {
+    expect(
+      pickInstructionTexts([
+        { "@type": "HowToStep", text: "Brown the beef." },
+        { "@type": "HowToStep", text: "Add the onions." },
+      ]),
+    ).toEqual(["Brown the beef.", "Add the onions."]);
+  });
+  it("flattens HowToSection nesting", () => {
+    expect(
+      pickInstructionTexts([
+        {
+          "@type": "HowToSection",
+          name: "Sauce",
+          itemListElement: [
+            { "@type": "HowToStep", text: "Simmer." },
+            { "@type": "HowToStep", text: "Season." },
+          ],
+        },
+      ]),
+    ).toEqual(["Simmer.", "Season."]);
+  });
+  it("skips empty and unknown shapes", () => {
+    expect(pickInstructionTexts(null)).toEqual([]);
+    expect(pickInstructionTexts([{ "@type": "HowToStep" }, "  "])).toEqual([]);
+  });
+});
+
+describe("pickKeywords", () => {
+  it("splits a comma-separated string", () => {
+    expect(pickKeywords("soup, comfort food, tomato")).toEqual([
+      "soup",
+      "comfort food",
+      "tomato",
+    ]);
+  });
+  it("accepts an array and trims entries", () => {
+    expect(pickKeywords([" soup ", "tomato"])).toEqual(["soup", "tomato"]);
+  });
+  it("drops empty entries", () => {
+    expect(pickKeywords("a,, ,b")).toEqual(["a", "b"]);
+    expect(pickKeywords(null)).toEqual([]);
   });
 });

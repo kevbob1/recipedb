@@ -21,12 +21,11 @@ import {
   useSubmit,
 } from "react-router";
 import type { Route } from "./+types/_index";
+import { CATEGORIES, type Category } from "../lib/categories";
 import {
-  CATEGORIES,
   categoryCounts,
   listRecipes,
   suggestTags,
-  type Category,
   type SearchHit,
 } from "../lib/search.server";
 import { requireAuth } from "../lib/auth.server";

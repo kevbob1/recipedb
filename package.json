@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "react-router dev",
-    "build": "react-router build",
+    "build": "react-router build && esbuild app/server-boot.ts --bundle --platform=node --format=esm --packages=external --outfile=build/server/boot.mjs",
     "start": "node server.js",
     "typecheck": "react-router typegen && tsc --noEmit",
     "test": "vitest run",
@@ -36,6 +36,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "drizzle-kit": "^0.30.0",
+    "esbuild": "^0.19.12",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.7",

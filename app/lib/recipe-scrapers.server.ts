@@ -35,6 +35,8 @@ import {
   pickImage,
   pickString,
   pickStringArray,
+  pickInstructionTexts,
+  pickKeywords,
 } from "./url-parse";
 
 /** Politeness: identify ourselves and time out aggressively. */
@@ -90,11 +92,13 @@ export async function importFromUrl(rawUrl: string): Promise<ImportUrlResult> {
 
   // Fallback: JSON-LD.
   let fallbackDraft: RecipeDraft | null = null;
+  let fallbackImageUrl: string | null = null;
   if (!primaryDraft || !primaryDraft.title.trim()) {
     const { recipe, blocks } = extractJsonLd(html);
     if (recipe) {
       fallbackDraft = draftFromJsonLd(recipe, url);
       fallbackDraft.raw = JSON.stringify(blocks, null, 2);
+      fallbackImageUrl = pickImage(recipe["image"]);
     }
   }
 
@@ -109,9 +113,13 @@ export async function importFromUrl(rawUrl: string): Promise<ImportUrlResult> {
   // Image download (sharp → WebP or AVIF, saved under images/).
   let imageFilename: string | null = null;
   if (draft.sourceUrl) {
-    const imageUrl = pickImage((fallbackDraft ?? primaryDraft)!.ingredients.length >= 0
-      ? extractImageFromDraft(draft, html)
-      : null);
+    // recipe-scrapers keeps its image inside the raw JSON; the JSON-LD
+    // fallback hands it over directly because its raw is the whole block
+    // list, not a single recipe object (#13 smoke test).
+    const imageUrl =
+      draft === primaryDraft
+        ? extractImageFromDraft(draft, html)
+        : fallbackImageUrl;
     if (imageUrl) {
       try {
         imageFilename = await downloadRecipeImage(imageUrl);
@@ -226,17 +234,15 @@ function draftFromJsonLd(
   const ingredients: DraftIngredient[] = pickStringArray(
     recipe["recipeIngredient"],
   ).map((line) => ingredientFromRawLine(line, "ok"));
-  const steps: DraftStep[] = pickStringArray(
+  const steps: DraftStep[] = pickInstructionTexts(
     recipe["recipeInstructions"],
   ).map((text, i) => ({ position: i + 1, text: trimOnlyRequired(text) }));
   const yields = pickString(recipe["recipeYield"]);
-  const image = pickImage(recipe["image"]);
   const categoryKeywords = [
     ...pickStringArray(recipe["recipeCategory"]),
     ...pickStringArray(recipe["recipeCuisine"]),
   ];
-  const tags = pickStringArray(recipe["keywords"]);
-  void image; // The caller will pick the image up from the same recipe.
+  const tags = pickKeywords(recipe["keywords"]);
   return {
     title,
     titleConfidence: title ? "ok" : "bad",

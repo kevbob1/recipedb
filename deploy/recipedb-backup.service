@@ -1,0 +1,9 @@
+[Unit]
+Description=recipedb nightly backup
+Documentation=file:/srv/recipedb/README.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/srv/recipedb/backup.sh
