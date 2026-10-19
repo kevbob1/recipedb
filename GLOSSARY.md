@@ -7,11 +7,11 @@ Domain language for the single-household recipe organizer: what a Recipe is and 
 ### Recipe & import
 
 **Recipe**:
-A single stored dish, created by one import or one manual entry. No merge in the MVP.
+A single stored dish, created by one import or one manual entry. Editing a recipe revises that stored row in place; imports never merge into an existing recipe.
 _Avoid_: Dish, item, entry
 
 **Draft**:
-The editable state every imported recipe lands in, awaiting review. All imports become drafts; nothing publishes silently.
+The editable state every imported recipe lands in, awaiting review. All imports become drafts; nothing publishes silently. Saving an edited draft revises it in place rather than creating a second recipe.
 _Avoid_: Pending, staging
 
 **Review**:

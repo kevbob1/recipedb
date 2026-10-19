@@ -18,7 +18,13 @@ import { runMigrations } from "../db/migrate.server";
 import { ensureDataDirs, getDb, getRawSqlite } from "../db/client.server";
 import { recipes, ingredientLines, steps, tags } from "../db/schema.server";
 import { blankDraft, type RecipeDraft } from "./draft";
-import { loadDraft, saveDraft, SaveError } from "./save-draft.server";
+import {
+  loadDraft,
+  saveDraft,
+  updateDraft,
+  deleteRecipe,
+  SaveError,
+} from "./save-draft.server";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
@@ -143,5 +149,120 @@ describe("saveDraft", () => {
         category: "fusion",
       }),
     ).toThrowError(SaveError);
+  });
+});
+
+describe("updateDraft", () => {
+  it("revises the stored recipe in place and replaces its child rows", () => {
+    const { recipeId } = saveDraft(urlDraft());
+    const db = getDb();
+    const sqlite = getRawSqlite();
+    const rowCountBefore = db.select().from(recipes).all().length;
+
+    const edited: RecipeDraft = {
+      ...urlDraft(),
+      title: "Small Stew",
+      category: "one-dish",
+      categoryConfidence: "ok",
+      yield: "2 servings",
+      favorite: true,
+      tags: ["quick"],
+      ingredients: [
+        {
+          text: "2 cups stock",
+          qty: "2",
+          unit: "cups",
+          item: "stock",
+          note: null,
+          confidence: "ok",
+        },
+      ],
+      steps: [{ position: 1, text: "Simmer everything." }],
+    };
+
+    const result = updateDraft(recipeId, edited);
+    expect(result.recipeId).toBe(recipeId);
+
+    // No duplicate recipe row was created.
+    expect(db.select().from(recipes).all().length).toBe(rowCountBefore);
+    const row = db.select().from(recipes).where(eq(recipes.id, recipeId)).get();
+    expect(row).toBeDefined();
+    expect(row!.title).toBe("Small Stew");
+    expect(row!.category).toBe("one-dish");
+    expect(row!.favorite).toBe(true);
+    expect(row!.yield).toBe("2 servings");
+    expect(row!.isDraft).toBe(true);
+
+    // Old children are gone; the edited set is what remains.
+    const ings = db
+      .select()
+      .from(ingredientLines)
+      .where(eq(ingredientLines.recipeId, recipeId))
+      .all();
+    expect(ings.length).toBe(1);
+    expect(ings[0]!.item).toBe("stock");
+    expect(ings[0]!.position).toBe(1);
+    // Parse-on-write still runs on update.
+    expect(ings[0]!.qtyAmount).toBe(2);
+
+    const sts = db.select().from(steps).where(eq(steps.recipeId, recipeId)).all();
+    expect(sts.length).toBe(1);
+    expect(sts[0]!.text).toBe("Simmer everything.");
+
+    const tgs = db.select().from(tags).where(eq(tags.recipeId, recipeId)).all();
+    expect(tgs.map((t) => t.label)).toEqual(["quick"]);
+
+    // FTS reflects the new title and no longer indexes the old one.
+    const newHit = sqlite
+      .prepare("SELECT rowid FROM recipe_fts WHERE recipe_fts MATCH 'small'")
+      .all() as { rowid: number }[];
+    expect(newHit.map((r) => r.rowid)).toContain(recipeId);
+    const oldHit = sqlite
+      .prepare("SELECT rowid FROM recipe_fts WHERE recipe_fts MATCH 'big'")
+      .all() as { rowid: number }[];
+    expect(oldHit.map((r) => r.rowid)).not.toContain(recipeId);
+
+    // The editor re-loads the edited values.
+    const loaded = loadDraft(recipeId);
+    expect(loaded!.title).toBe("Small Stew");
+    expect(loaded!.ingredients.length).toBe(1);
+    expect(loaded!.steps[0]!.text).toBe("Simmer everything.");
+  });
+
+  it("throws SaveError not-found for a missing recipe and writes nothing", () => {
+    const db = getDb();
+    const rowCountBefore = db.select().from(recipes).all().length;
+    expect(() => updateDraft(999_999, urlDraft())).toThrowError(SaveError);
+    try {
+      updateDraft(999_999, urlDraft());
+    } catch (err) {
+      expect((err as SaveError).code).toBe("not-found");
+    }
+    expect(db.select().from(recipes).all().length).toBe(rowCountBefore);
+  });
+});
+
+describe("deleteRecipe", () => {
+  it("cascades to ingredient lines, steps and tags and clears FTS", () => {
+    const { recipeId } = saveDraft(urlDraft());
+    const db = getDb();
+    const sqlite = getRawSqlite();
+
+    expect(deleteRecipe(recipeId)).toBe(true);
+
+    expect(db.select().from(recipes).where(eq(recipes.id, recipeId)).get()).toBeUndefined();
+    expect(
+      db.select().from(ingredientLines).where(eq(ingredientLines.recipeId, recipeId)).all(),
+    ).toEqual([]);
+    expect(db.select().from(steps).where(eq(steps.recipeId, recipeId)).all()).toEqual([]);
+    expect(db.select().from(tags).where(eq(tags.recipeId, recipeId)).all()).toEqual([]);
+
+    const ftsRows = sqlite
+      .prepare("SELECT rowid FROM recipe_fts WHERE rowid = ?")
+      .all(recipeId) as { rowid: number }[];
+    expect(ftsRows).toEqual([]);
+
+    // Deleting again reports that there was nothing to delete.
+    expect(deleteRecipe(recipeId)).toBe(false);
   });
 });

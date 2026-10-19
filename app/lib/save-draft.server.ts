@@ -39,14 +39,27 @@ export interface SaveDraftResult {
   isDraft: true;
 }
 
+/** Cleaned, DB-ready pieces shared by saveDraft and updateDraft. */
+interface PreparedDraft {
+  fields: {
+    title: string;
+    category: Category;
+    yield: string | null;
+    favorite: boolean;
+    sourceType: RecipeDraft["sourceType"];
+    sourceUrl: string | null;
+    rawOcrText: string | null;
+  };
+  ingredients: Omit<NewIngredientLine, "recipeId">[];
+  steps: Omit<NewStep, "recipeId">[];
+  tags: Omit<NewTag, "recipeId">[];
+}
+
 /**
- * Persist a draft. Throws on validation failure (missing title, unknown
- * category). Returns the new recipe id.
- *
- * The caller is responsible for setting isDraft = true; we never publish
- * silently. (`publish: true` is not part of the MVP — see ticket #11.)
+ * Validate + normalize a draft exactly once, for both insert and update.
+ * Throws SaveError on a missing title or unknown category.
  */
-export function saveDraft(draft: RecipeDraft): SaveDraftResult {
+function prepareDraft(draft: RecipeDraft): PreparedDraft {
   const title = trimOnlyRequired(draft.title);
   if (!title) {
     throw new SaveError("title-required", "A title is required to save a draft.");
@@ -58,54 +71,38 @@ export function saveDraft(draft: RecipeDraft): SaveDraftResult {
     );
   }
 
-  const db = getDb();
-  const now = new Date();
-  const baseRecipe: NewRecipe = {
-    title,
-    isDraft: true,
-    yield: trimOnly(draft.yield),
-    category: draft.category as Category,
-    favorite: draft.favorite,
-    sourceType: draft.sourceType,
-    sourceUrl: trimOnly(draft.sourceUrl),
-    rawOcrText: trimOnly(draft.rawOcrText),
-    createdAt: now,
-    updatedAt: now,
-  };
+  const ingredients: Omit<NewIngredientLine, "recipeId">[] = draft.ingredients
+    .map((ing, i) => {
+      const qty = trimOnlyRequired(ing.qty);
+      const unit = trimOnly(ing.unit);
+      // Parse-on-write. A row that already carries a trusted parse (importer
+      // output, or a draft re-loaded from the DB) keeps it; anything else —
+      // including a hand-edited qty, which the editor resets to `unparsed` —
+      // is parsed here so the numeric columns are never left stale.
+      // See the decision on #15.
+      const parsed = resolveQuantity({ ...ing, qty, unit });
+      return {
+        qty,
+        unit,
+        item: trimOnlyRequired(ing.item || ing.text),
+        note: trimOnly(ing.note),
+        position: i + 1,
+        qtyAmount: parsed.amount,
+        qtyAmount2: parsed.amount2,
+        qtyUnitNormalized: parsed.unitNormalized,
+        qtyParseStatus: parsed.status,
+      };
+    })
+    .filter((row) => row.item.length > 0);
 
-  const cleanIngredients: Omit<NewIngredientLine, "recipeId">[] =
-    draft.ingredients
-      .map((ing, i) => {
-        const qty = trimOnlyRequired(ing.qty);
-        const unit = trimOnly(ing.unit);
-        // Parse-on-write. A row that already carries a trusted parse (importer
-        // output, or a draft re-loaded from the DB) keeps it; anything else —
-        // including a hand-edited qty, which the editor resets to `unparsed` —
-        // is parsed here so the numeric columns are never left stale.
-        // See the decision on #15.
-        const parsed = resolveQuantity({ ...ing, qty, unit });
-        return {
-          qty,
-          unit,
-          item: trimOnlyRequired(ing.item || ing.text),
-          note: trimOnly(ing.note),
-          position: i + 1,
-          qtyAmount: parsed.amount,
-          qtyAmount2: parsed.amount2,
-          qtyUnitNormalized: parsed.unitNormalized,
-          qtyParseStatus: parsed.status,
-        };
-      })
-      .filter((row) => row.item.length > 0);
-
-  const cleanSteps: Omit<NewStep, "recipeId">[] = draft.steps
+  const steps: Omit<NewStep, "recipeId">[] = draft.steps
     .map((s, i) => ({
       position: i + 1,
       text: trimOnlyRequired(s.text),
     }))
     .filter((row) => row.text.length > 0);
 
-  const cleanTags: Omit<NewTag, "recipeId">[] = (() => {
+  const tags: Omit<NewTag, "recipeId">[] = (() => {
     const seen = new Set<string>();
     const out: Omit<NewTag, "recipeId">[] = [];
     for (const t of draft.tags) {
@@ -117,37 +114,132 @@ export function saveDraft(draft: RecipeDraft): SaveDraftResult {
     return out;
   })();
 
+  return {
+    fields: {
+      title,
+      category: draft.category as Category,
+      yield: trimOnly(draft.yield),
+      favorite: draft.favorite,
+      sourceType: draft.sourceType,
+      sourceUrl: trimOnly(draft.sourceUrl),
+      rawOcrText: trimOnly(draft.rawOcrText),
+    },
+    ingredients,
+    steps,
+    tags,
+  };
+}
+
+/** Insert the child rows for a recipe. Caller supplies the transaction. */
+function insertChildren(recipeId: number, prepared: PreparedDraft): void {
+  const db = getDb();
+  if (prepared.ingredients.length > 0) {
+    db.insert(ingredientLines)
+      .values(prepared.ingredients.map((row) => ({ ...row, recipeId })))
+      .run();
+  }
+  if (prepared.steps.length > 0) {
+    db.insert(steps)
+      .values(prepared.steps.map((row) => ({ ...row, recipeId })))
+      .run();
+  }
+  if (prepared.tags.length > 0) {
+    db.insert(tags)
+      .values(prepared.tags.map((row) => ({ ...row, recipeId })))
+      .run();
+  }
+}
+
+/** Delete the child rows for a recipe. Caller supplies the transaction. */
+function deleteChildren(recipeId: number): void {
+  const db = getDb();
+  db.delete(ingredientLines).where(eq(ingredientLines.recipeId, recipeId)).run();
+  db.delete(steps).where(eq(steps.recipeId, recipeId)).run();
+  db.delete(tags).where(eq(tags.recipeId, recipeId)).run();
+}
+
+/**
+ * Persist a draft. Throws on validation failure (missing title, unknown
+ * category). Returns the new recipe id.
+ *
+ * The caller is responsible for setting isDraft = true; we never publish
+ * silently. (`publish: true` is not part of the MVP — see ticket #11.)
+ */
+export function saveDraft(draft: RecipeDraft): SaveDraftResult {
+  const prepared = prepareDraft(draft);
+  const now = new Date();
+  const baseRecipe: NewRecipe = {
+    ...prepared.fields,
+    isDraft: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+
   const sqlite = getRawSqlite();
   let recipeId = 0;
   const run = sqlite.transaction(() => {
-    const inserted = db.insert(recipes).values(baseRecipe).returning().get();
+    const inserted = getDb()
+      .insert(recipes)
+      .values(baseRecipe)
+      .returning()
+      .get();
     if (!inserted) throw new SaveError("insert-failed", "Recipe insert failed.");
     recipeId = inserted.id;
-    if (cleanIngredients.length > 0) {
-      db.insert(ingredientLines)
-        .values(
-          cleanIngredients.map((row) => ({ ...row, recipeId })),
-        )
-        .run();
-    }
-    if (cleanSteps.length > 0) {
-      db.insert(steps)
-        .values(
-          cleanSteps.map((row) => ({ ...row, recipeId })),
-        )
-        .run();
-    }
-    if (cleanTags.length > 0) {
-      db.insert(tags)
-        .values(
-          cleanTags.map((row) => ({ ...row, recipeId })),
-        )
-        .run();
-    }
+    insertChildren(recipeId, prepared);
   });
   run();
 
   return { recipeId, isDraft: true };
+}
+
+/**
+ * Revise an existing recipe in place. Same validation and normalization as
+ * saveDraft; replaces title/provenance fields and rewrites all child rows
+ * (ingredient lines, steps, tags) inside one transaction. Throws SaveError
+ * with code "not-found" when no recipe has that id.
+ *
+ * The row keeps its id, createdAt, and isDraft flag: an edit revises the
+ * stored recipe, it never creates a second one or changes its publish state.
+ */
+export function updateDraft(id: number, draft: RecipeDraft): SaveDraftResult {
+  const prepared = prepareDraft(draft);
+  const now = new Date();
+  const db = getDb();
+
+  const sqlite = getRawSqlite();
+  const run = sqlite.transaction(() => {
+    const existing = db
+      .select({ id: recipes.id })
+      .from(recipes)
+      .where(eq(recipes.id, id))
+      .get();
+    if (!existing) {
+      throw new SaveError("not-found", `Recipe #${id} was not found.`);
+    }
+    db.update(recipes)
+      .set({ ...prepared.fields, updatedAt: now })
+      .where(eq(recipes.id, id))
+      .run();
+    // Replace, do not merge: the review screen's state is the whole truth.
+    deleteChildren(id);
+    insertChildren(id, prepared);
+  });
+  run();
+
+  return { recipeId: id, isDraft: true };
+}
+
+/**
+ * Delete a recipe. Child rows are removed by ON DELETE CASCADE and the FTS
+ * triggers keep recipe_fts consistent. Returns false when the id did not exist.
+ */
+export function deleteRecipe(id: number): boolean {
+  const deleted = getDb()
+    .delete(recipes)
+    .where(eq(recipes.id, id))
+    .returning({ id: recipes.id })
+    .get();
+  return deleted !== undefined;
 }
 
 /**
@@ -205,7 +297,8 @@ export class SaveError extends Error {
     public code:
       | "title-required"
       | "invalid-category"
-      | "insert-failed",
+      | "insert-failed"
+      | "not-found",
     message: string,
   ) {
     super(message);

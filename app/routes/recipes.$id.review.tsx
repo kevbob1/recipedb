@@ -19,7 +19,7 @@ import {
   blankDraft,
   countNeedEyes,
 } from "../lib/draft";
-import { loadDraft, saveDraft, SaveError } from "../lib/save-draft.server";
+import { loadDraft, updateDraft, deleteRecipe, SaveError } from "../lib/save-draft.server";
 import { requireAuth } from "../lib/auth.server";
 
 export function meta({ data }: Route.MetaArgs) {
@@ -47,20 +47,27 @@ export async function action({ request, params }: Route.ActionArgs) {
     return Response.json({ ok: false, error: "bad-id" }, { status: 400 });
   }
   const form = await request.formData();
+
+  if (String(form.get("intent") ?? "") === "delete") {
+    if (!deleteRecipe(id)) {
+      return Response.json({ ok: false, error: "not-found" }, { status: 404 });
+    }
+    return redirect("/");
+  }
+
   const raw = String(form.get("draft") ?? "");
   if (!raw) {
     return Response.json({ ok: false, error: "empty-draft" }, { status: 400 });
   }
   try {
     const incoming = JSON.parse(raw) as RecipeDraft;
-    // Make sure the saved recipe keeps its id/source type even if the editor
-    // clears them by accident.
-    incoming.sourceType = incoming.sourceType;
-    saveDraft(incoming);
+    // Revise the row we loaded: the review screen edits one stored recipe.
+    updateDraft(id, incoming);
     return redirect(`/recipes/${id}/review?saved=1`);
   } catch (err) {
     if (err instanceof SaveError) {
-      return Response.json({ ok: false, error: err.code, message: err.message }, { status: 400 });
+      const status = err.code === "not-found" ? 404 : 400;
+      return Response.json({ ok: false, error: err.code, message: err.message }, { status });
     }
     return Response.json({ ok: false, error: "internal" }, { status: 500 });
   }
@@ -104,6 +111,37 @@ export default function ReviewRoute({ loaderData }: Route.ComponentProps) {
     }
   }
 
+  async function remove() {
+    if (
+      !window.confirm(
+        "Delete this recipe? Its ingredients, steps, and tags are removed too. This cannot be undone.",
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/recipes/${loaderData.recipeId}/review`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ intent: "delete" }),
+      });
+      if (!res.ok && !res.redirected) {
+        const json = (await res.json().catch(() => null)) as
+          | { error?: string; message?: string }
+          | null;
+        setError(json?.message ?? json?.error ?? "Couldn't delete.");
+        return;
+      }
+      window.location.assign("/");
+    } catch (err) {
+      setError((err as Error).message ?? "Couldn't delete.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <main style={{ maxWidth: 720, margin: "0 auto", padding: "1.5rem 1rem 8rem", fontFamily: "system-ui, sans-serif" }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -116,11 +154,28 @@ export default function ReviewRoute({ loaderData }: Route.ComponentProps) {
         Source: {draft.sourceType}
         {draft.sourceUrl ? <> · <a href={draft.sourceUrl} target="_blank" rel="noreferrer">{draft.sourceUrl}</a></> : null}
       </p>
-      {saved ? <p style={{ color: "#2f7a3e", fontSize: 13 }}>Saved.</p> : null}
+      {saved ? (
+        <p
+          role="status"
+          style={{
+            color: "#2f7a3e",
+            background: "#eef6ef",
+            border: "1px solid #b9d9be",
+            borderRadius: 6,
+            padding: "8px 10px",
+            fontSize: 13,
+          }}
+        >
+          Saved — your changes are now the stored recipe.
+        </p>
+      ) : null}
       <ReviewEditor draft={draft} setDraft={setDraft} />
       {error ? <p style={{ color: "#9a3030", fontSize: 13 }}>{error}</p> : null}
       <div style={{ display: "flex", gap: 10, marginTop: 18, position: "sticky", bottom: 0, background: "#fff", padding: "12px 0", borderTop: "1px solid #e3ddd2" }}>
         <Link to="/add" style={{ ...ghostBtn, textDecoration: "none", display: "inline-block" }}>+ Add another</Link>
+        <button type="button" onClick={remove} style={dangerBtn} disabled={saving}>
+          Delete recipe
+        </button>
         <button type="button" onClick={save} style={{ ...primaryBtn, marginLeft: "auto" }} disabled={saving || !draft.title.trim()}>
           {saving ? "Saving…" : "Save draft"}
         </button>
@@ -144,6 +199,16 @@ const ghostBtn: React.CSSProperties = {
   border: "1px solid #c9c1b1",
   background: "#fff",
   color: "inherit",
+  borderRadius: 999,
+  padding: "10px 18px",
+  font: "inherit",
+  cursor: "pointer",
+};
+const dangerBtn: React.CSSProperties = {
+  appearance: "none",
+  border: "1px solid #9a3030",
+  background: "#fff",
+  color: "#9a3030",
   borderRadius: 999,
   padding: "10px 18px",
   font: "inherit",
