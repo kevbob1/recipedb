@@ -2,8 +2,14 @@
 # Multi-stage build: compile TS, then a slim runtime image with only prod deps.
 # Ticket #13 owns the full deploy story; this image must satisfy ticket #9
 # (single container, no nginx / compose / DB sidecar).
+#
+# Node base image is pinned to an exact patch (26.10.0, 2026-10) rather than a
+# floating tag: better-sqlite3 / sharp / @node-rs/argon2 ship prebuilt native
+# bindings keyed to the Node version + ABI, so a minor/patch bump can silently
+# require a recompile. Pinning keeps builds reproducible. Any CI/devcontainer
+# image (#22) should adopt the same 26.10.0 pin.
 
-FROM node:22-bookworm-slim AS build
+FROM node:26.10.0-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
@@ -13,7 +19,7 @@ RUN npm run build
 # Prune dev deps so the runtime image only carries production deps.
 RUN npm prune --omit=dev
 
-FROM node:22-bookworm-slim AS runtime
+FROM node:26.10.0-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 # /data is where the DB + images + migrations-applied.json live.
