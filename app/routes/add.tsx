@@ -28,7 +28,7 @@ import {
   countNeedEyes,
   ingredientConfidence,
 } from "../lib/draft";
-import { formatAmount, resolveQuantity, scaleQuantity } from "../lib/quantity-parse";
+import { formatAmount, scaledIngredientRows } from "../lib/quantity-parse";
 import { recognizeText, ocrTextToDraft, guessCategory } from "../lib/ocr";
 import { requireAuth } from "../lib/auth.server";
 
@@ -820,24 +820,19 @@ export function ScaledIngredientList({
         <p style={{ color: "#6b655c", fontSize: 13 }}>Nothing to scale yet.</p>
       ) : (
         <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-          {ingredients.map((ing, i) => {
-            const parsed = resolveQuantity(ing);
-            const scaled = scaleQuantity(ing.qty, factor, parsed);
-            const unit = ing.unit ?? parsed.unitNormalized ?? "";
-            return (
-              <li
-                key={i}
-                style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "4px 0", fontSize: 14, borderTop: i === 0 ? "none" : "1px solid #ece8de" }}
-              >
-                <span style={{ minWidth: 84, fontWeight: 600 }}>{scaled.display}</span>
-                <span style={{ color: "#3a3733" }}>
-                  {[unit, ing.item].filter(Boolean).join(" ")}
-                  {ing.note ? <span style={{ color: "#6b655c" }}>, {ing.note}</span> : null}
-                </span>
-                {scaled.scaled ? null : <BadgeWarn text="⚠ scaling not applied" />}
-              </li>
-            );
-          })}
+          {scaledIngredientRows(ingredients, factor).map((row, i) => (
+            <li
+              key={i}
+              style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "4px 0", fontSize: 14, borderTop: i === 0 ? "none" : "1px solid #ece8de" }}
+            >
+              <span style={{ minWidth: 84, fontWeight: 600 }}>{row.display}</span>
+              <span style={{ color: "#3a3733" }}>
+                {[row.unit, row.item].filter(Boolean).join(" ")}
+                {row.note ? <span style={{ color: "#6b655c" }}>, {row.note}</span> : null}
+              </span>
+              {row.scaled ? null : <BadgeWarn text="⚠ scaling not applied" />}
+            </li>
+          ))}
         </ul>
       )}
     </div>

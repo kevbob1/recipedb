@@ -230,6 +230,20 @@ export interface ScaledQuantity {
   mark: string | null;
 }
 
+/** A draft ingredient (or DB row) with the text the review list renders. */
+export interface ScaledIngredientSource extends QuantityCarrier {
+  item?: string | null;
+  note?: string | null;
+}
+
+/** One rendered line of the review UI's scaled view. */
+export interface ScaledIngredientRow extends ScaledQuantity {
+  /** Unit printed next to the amount; falls back to the parsed unit. */
+  unit: string;
+  item: string;
+  note: string | null;
+}
+
 /**
  * Derived scaled view: amount x factor. Never mutates stored text.
  * Pass `parsed` when the row already carries a trusted parse (loadDraft does),
@@ -258,4 +272,27 @@ export function scaleQuantity(
     scaled: true,
     mark: null,
   };
+}
+
+/**
+ * The review UI's pure render path: project a whole ingredient list at
+ * `factor`. The multiplier buttons only own that one number, so this is what
+ * a click on 2× has to reach — the stored `qty` is never rewritten.
+ */
+export function scaledIngredientRows(
+  ingredients: ScaledIngredientSource[],
+  factor: number,
+): ScaledIngredientRow[] {
+  return ingredients.map((ing) => {
+    const parsed = resolveQuantity(ing);
+    const scaled = scaleQuantity(ing.qty ?? "", factor, parsed);
+    return {
+      display: scaled.display,
+      scaled: scaled.scaled,
+      mark: scaled.mark,
+      unit: ing.unit ?? parsed.unitNormalized ?? "",
+      item: ing.item ?? "",
+      note: ing.note ?? null,
+    };
+  });
 }

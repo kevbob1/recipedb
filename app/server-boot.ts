@@ -14,6 +14,13 @@ import { assertAuthEnvConfigured } from "./lib/auth.server";
 import { getPort } from "./lib/env.server";
 
 /**
+ * Re-exported for server.js: the plain-Node listener must serve `build/client`
+ * itself, because `createRequestListener` only knows routes. See
+ * app/lib/static-assets.server.ts (#26).
+ */
+export { handleStaticAsset } from "./lib/static-assets.server";
+
+/**
  * Run everything that must happen before the HTTP listener opens.
  * Throws on failure so server.js can exit non-zero.
  */
