@@ -173,6 +173,12 @@ export default function ReviewRoute({ loaderData }: Route.ComponentProps) {
       {error ? <p style={{ color: "#9a3030", fontSize: 13 }}>{error}</p> : null}
       <div style={{ display: "flex", gap: 10, marginTop: 18, position: "sticky", bottom: 0, background: "#fff", padding: "12px 0", borderTop: "1px solid #e3ddd2" }}>
         <Link to="/add" style={{ ...ghostBtn, textDecoration: "none", display: "inline-block" }}>+ Add another</Link>
+        <Link
+          to={`/recipes/${loaderData.recipeId}/cook`}
+          style={{ ...ghostBtn, textDecoration: "none", display: "inline-block" }}
+        >
+          Cook this →
+        </Link>
         <button type="button" onClick={remove} style={dangerBtn} disabled={saving}>
           Delete recipe
         </button>

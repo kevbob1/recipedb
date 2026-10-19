@@ -14,4 +14,6 @@ export default [
   route("api/import-url", "routes/api.import-url.ts"),
   route("api/save-draft", "routes/api.save-draft.ts"),
   route("recipes/:id/review", "routes/recipes.$id.review.tsx"),
+  // Read-only cook screen (#18). No action: a cook session writes nothing.
+  route("recipes/:id/cook", "routes/recipes.$id.cook.tsx"),
 ] satisfies RouteConfig;
