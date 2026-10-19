@@ -386,7 +386,7 @@ function RecipeRow({ hit }: { hit: SearchHit }) {
   return (
     <li>
       <Link
-        to={`/recipes/${hit.id}/review`}
+        to={`/recipes/${hit.id}`}
         style={rowLinkStyle}
         aria-label={`${hit.title}, category ${hit.category}${
           hit.favorite ? ", favorite" : ""
