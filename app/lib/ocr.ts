@@ -12,12 +12,17 @@
  * use case the browser is the right place — the photo already lives there
  * for the capture step, so we never serialize the bytes across a network.
  *
- * `sharp` is also used here client-side for a one-shot auto-orient + downsize
- * before passing to tesseract. That keeps the recognition pass fast and
- * doesn't help the photo escape the page.
+ * Preprocessing happens here, client-side, on a canvas — NOT with `sharp`.
+ * `sharp` is a native Node addon and cannot run in the browser bundle; it is
+ * used only by the Node tuning harness and tests (scripts/, *.test.ts). The
+ * browser path is app/lib/image-preprocess.ts (canvas) and the pixel work it
+ * shares with the harness is app/lib/image-ops.ts. Passing raw phone photos
+ * straight to tesseract produced garbled text: small soft print, dim indoor
+ * lighting and a 12MP frame with no upscaling. `scripts/ocr-tune.ts` measures
+ * the difference on the fixture photos.
  */
 
-import { createWorker, type Worker } from "tesseract.js";
+import { createWorker, PSM, type Worker } from "tesseract.js";
 import type {
   DraftIngredient,
   DraftStep,
@@ -29,19 +34,84 @@ import {
   type Confidence,
   blankDraft,
 } from "./draft";
+import {
+  DEFAULT_OCR_PREPROCESS,
+  type PreprocessOptions,
+} from "./image-ops";
+import { tryPreprocessImageBlob } from "./image-preprocess";
 import { trimOnlyRequired } from "./normalize";
 
 /**
- * Run OCR on an in-memory image Blob. Returns the raw recognized text.
- * Does not touch disk; the Blob is consumed and dropped.
+ * Tesseract engine parameters shared by the browser worker and the Node
+ * tuning harness, so what Kevin measures in `scripts/ocr-tune.ts` is what the
+ * app actually runs.
+ *
+ * - `tessedit_pageseg_mode`: AUTO (3). Measured on the fixtures: AUTO recovered
+ *   more ingredient rows than SINGLE_BLOCK (mean 10.0 vs 7.0 lines) at equal
+ *   confidence, because these photos catch two-page spreads and recipe cards
+ *   with side notes — layouts that SINGLE_BLOCK assumes away.
+ * - `preserve_interword_spaces`: keeps `2 tbsp soy sauce` from collapsing into
+ *   `2tbspsoysauce`, which the quantity parser needs.
+ * - `user_defined_dpi`: phone photos carry no DPI; without this tesseract
+ *   guesses (often 70) and skips its scale heuristics.
+ * - `tessedit_char_blacklist`: `|`, `~` and backtick are never real recipe
+ *   characters, and are the classic misreads of `l`/`I`/`1`.
  */
-export async function recognizeText(blob: Blob): Promise<string> {
-  const worker: Worker = await createWorker("eng", undefined, {
+export const OCR_WORKER_PARAMS = {
+  tessedit_pageseg_mode: PSM.AUTO,
+  preserve_interword_spaces: "1",
+  user_defined_dpi: "300",
+  tessedit_char_blacklist: "|~`",
+};
+
+export interface RecognizeOptions {
+  /**
+   * Set false to OCR the raw bytes — used by the tuning script and fixture
+   * tests to quantify what preprocessing buys.
+   */
+  preprocess?: boolean;
+  /** Override the preprocessing knobs (see DEFAULT_OCR_PREPROCESS). */
+  preprocessOptions?: PreprocessOptions;
+  /** Page segmentation mode; defaults to OCR_WORKER_PARAMS. */
+  psm?: PSM;
+  lang?: string;
+  /** tesseract.js status/progress callback (quiet by default). */
+  onProgress?: (status: string, progress: number) => void;
+}
+
+/**
+ * Run OCR on an in-memory image Blob. Returns the raw recognized text.
+ * Does not touch disk; the Blob is consumed and dropped. When canvas
+ * preprocessing is unavailable the raw bytes are OCR'd rather than failing.
+ */
+export async function recognizeText(
+  blob: Blob,
+  options: RecognizeOptions = {},
+): Promise<string> {
+  const { psm, lang = "eng", onProgress } = options;
+  const worker: Worker = await createWorker(lang, undefined, {
     // Quiet by default; tesseract.js is chatty.
-    logger: () => {},
+    logger: onProgress
+      ? (message) => onProgress(message.status, message.progress)
+      : () => {},
   });
   try {
-    const url = URL.createObjectURL(blob);
+    await worker.setParameters({
+      ...OCR_WORKER_PARAMS,
+      ...(psm === undefined ? {} : { tessedit_pageseg_mode: psm }),
+    });
+
+    const source =
+      options.preprocess === false
+        ? { blob, width: 0, height: 0, scale: 1, durationMs: 0 }
+        : (
+            await tryPreprocessImageBlob(
+              blob,
+              options.preprocessOptions ?? DEFAULT_OCR_PREPROCESS,
+            )
+          ).result;
+
+    const url = URL.createObjectURL(source.blob);
     try {
       const { data } = await worker.recognize(url);
       return (data.text ?? "").replace(/\r/g, "");
