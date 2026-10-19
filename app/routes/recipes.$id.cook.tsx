@@ -2,9 +2,14 @@
  * /recipes/:id/cook — the cook screen (issue #18, decision made on #17).
  *
  * Read-only by construction: the loader calls requireAuth + loadCookRecipe
- * and there is no action, so nothing here can write to the database. The
- * checked-off ingredients and the current step are React state that dies with
- * the tab — a cook session is not a document.
+ * and there is no action, so nothing here can write to the database.
+ *
+ * Cook progress (checked ingredients + current step) survives for 24 hours on
+ * the device under `cook:<recipeId>` in localStorage (issue #27). A same-tab
+ * reload restores silently; a new tab offers a dismissible resume banner;
+ * stale entries are ignored and overwritten lazily. Nothing leaves the device,
+ * and there is no per-user scoping — one key per recipe suits the shared
+ * kitchen tablet.
  *
  * Structure is the winning variant B (ScrollSticky) from the #17 prototype,
  * with variant C's ingredient progress bar grafted on:
@@ -17,12 +22,69 @@
  * Variants A (one step at a time) and C (split board) lost on #17 and are not
  * coming back here.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import type { Route } from "./+types/recipes.$id.cook";
 import { loadCookRecipe } from "../lib/cook.server";
+import {
+  cookStorageKey,
+  cookTabKey,
+  describeSavedAge,
+  parseCookState,
+  serializeCookState,
+  type CookRecipeId,
+  type CookSavedState,
+} from "../lib/cook-resume";
 import { useScreenWakeLock } from "../lib/wake-lock";
 import { requireAuth } from "../lib/auth.server";
+
+// Applies the stored session before the first paint on the client, while still
+// giving the server render a clean (empty) session — restoring in a useState
+// initializer instead would hydrate a different tree from the SSR markup.
+const useIsomorphicLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
+function readSavedState(recipeId: CookRecipeId): CookSavedState | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return parseCookState(window.localStorage.getItem(cookStorageKey(recipeId)));
+  } catch {
+    // Storage disabled or the payload throws on access — cook without resume.
+    return null;
+  }
+}
+
+function readTabAlive(recipeId: CookRecipeId): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.sessionStorage.getItem(cookTabKey(recipeId)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markTabAlive(recipeId: CookRecipeId): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(cookTabKey(recipeId), "1");
+  } catch {
+    // ignore
+  }
+}
+
+function clearSavedState(recipeId: CookRecipeId): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(cookStorageKey(recipeId));
+  } catch {
+    // ignore
+  }
+  try {
+    window.sessionStorage.removeItem(cookTabKey(recipeId));
+  } catch {
+    // ignore
+  }
+}
 
 export function meta({ data }: Route.MetaArgs) {
   if (!data) return [{ title: "Cook — recipedb" }];
@@ -50,6 +112,11 @@ export default function CookRoute({ loaderData }: Route.ComponentProps) {
   const index = total === 0 ? 0 : Math.min(rawIndex, total - 1);
   const [checked, setChecked] = useState<Record<number, boolean>>({});
   const [ingredientsOpen, setIngredientsOpen] = useState(true);
+  // A fresh new tab holds saved state here until the person answers the
+  // banner. While it is non-null, persistence is paused so the offer cannot
+  // overwrite itself with the empty starting session.
+  const [pendingResume, setPendingResume] = useState<CookSavedState | null>(null);
+  const [restored, setRestored] = useState(false);
   const wake = useScreenWakeLock();
   const stepRefs = useRef<Array<HTMLLIElement | null>>([]);
 
@@ -60,6 +127,59 @@ export default function CookRoute({ loaderData }: Route.ComponentProps) {
   const stepProgress = total === 0 ? 0 : ((index + 1) / total) * 100;
   const ingredientProgress =
     ingredients.length === 0 ? 0 : (checkedCount / ingredients.length) * 100;
+  const resumeCheckedCount = pendingResume
+    ? Object.values(pendingResume.checked).filter(Boolean).length
+    : 0;
+
+  // Restore after mount, once the SSR markup has hydrated: a same-tab reload
+  // applies silently and scrolls to the saved step (the observer below then
+  // agrees with it); a new tab only offers to resume.
+  useIsomorphicLayoutEffect(() => {
+    const stored = readSavedState(recipeId);
+    if (stored) {
+      const boundedIndex = total === 0 ? 0 : Math.min(stored.index, total - 1);
+      if (readTabAlive(recipeId)) {
+        setChecked(stored.checked);
+        setRawIndex(boundedIndex);
+        stepRefs.current[boundedIndex]?.scrollIntoView({ block: "center" });
+      } else {
+        setPendingResume({ ...stored, index: boundedIndex });
+      }
+    }
+    setRestored(true);
+  }, [recipeId, total]);
+
+  // Mark this tab as carrying a cook session only after the restore check has
+  // read the flag — StrictMode re-runs layout effects, and setting it there
+  // would make the second run mistake a new tab for a reload.
+  useEffect(() => {
+    markTabAlive(recipeId);
+  }, [recipeId]);
+
+  // Persist on change. An empty session is not worth a key: removing it keeps
+  // a dismissed banner (or "Start over") from leaving a pointless resume offer
+  // on the shared tablet.
+  useEffect(() => {
+    if (!restored || pendingResume !== null) return;
+    if (typeof window === "undefined") return;
+    if (checkedCount === 0 && index === 0) {
+      try {
+        window.localStorage.removeItem(cookStorageKey(recipeId));
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    try {
+      window.localStorage.setItem(
+        cookStorageKey(recipeId),
+        serializeCookState({ checked, index }),
+      );
+      markTabAlive(recipeId);
+    } catch {
+      // Storage full or disabled — cook mode still works, it just cannot resume.
+    }
+  }, [checked, checkedCount, index, pendingResume, restored, recipeId]);
 
   // Follow the scroll: whichever step card is nearest the middle band under
   // the sticky header becomes the current step. Tapping also sets the index,
@@ -90,6 +210,27 @@ export default function CookRoute({ loaderData }: Route.ComponentProps) {
   function makeCurrent(i: number) {
     setRawIndex(i);
     stepRefs.current[i]?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function resumeSession() {
+    if (pendingResume === null) return;
+    const bounded = total === 0 ? 0 : Math.min(pendingResume.index, total - 1);
+    setChecked(pendingResume.checked);
+    setRawIndex(bounded);
+    setPendingResume(null);
+    stepRefs.current[bounded]?.scrollIntoView({ block: "center" });
+  }
+
+  // "Start fresh" on the banner, its dismiss control, and "Start over" all
+  // land here: wipe both storage keys and the in-memory session.
+  function startFresh() {
+    clearSavedState(recipeId);
+    setChecked({});
+    setRawIndex(0);
+    setPendingResume(null);
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0 });
+    }
   }
 
   return (
@@ -154,6 +295,14 @@ export default function CookRoute({ loaderData }: Route.ComponentProps) {
           >
             {wake.on ? "Screen staying awake ✓" : "Keep screen awake"}
           </button>
+          <button
+            type="button"
+            onClick={startFresh}
+            style={chipBtnStyle}
+            aria-label="Start over: clear checkmarks, step and saved progress"
+          >
+            Start over
+          </button>
         </div>
         {wake.message ? (
           <p role="status" style={statusStyle}>{wake.message}</p>
@@ -163,6 +312,45 @@ export default function CookRoute({ loaderData }: Route.ComponentProps) {
           </p>
         ) : null}
       </header>
+
+      {pendingResume ? (
+        <section aria-label="Resume saved cook session" style={bannerStyle}>
+          <div style={bannerHeadStyle}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <p style={bannerTitleStyle}>Resume where you left off?</p>
+              <p style={bannerMetaStyle}>
+                {total === 0
+                  ? "No steps"
+                  : `Step ${Math.min(pendingResume.index + 1, total)} / ${total}`}
+                {" · "}
+                {resumeCheckedCount} ingredient
+                {resumeCheckedCount === 1 ? "" : "s"} checked · saved{" "}
+                {describeSavedAge(pendingResume.savedAt)}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={startFresh}
+              aria-label="Dismiss resume offer and start fresh"
+              style={dismissBtnStyle}
+            >
+              ×
+            </button>
+          </div>
+          <div style={bannerActionsStyle}>
+            <button
+              type="button"
+              onClick={resumeSession}
+              style={primaryChipStyle}
+            >
+              Resume
+            </button>
+            <button type="button" onClick={startFresh} style={chipBtnStyle}>
+              Start fresh
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       {ingredientsOpen ? (
         <section aria-label="Ingredient checklist" style={cardStyle}>
@@ -281,8 +469,10 @@ export default function CookRoute({ loaderData }: Route.ComponentProps) {
       )}
 
       <p style={footnoteStyle}>
-        Nothing on this screen is saved: the checklist and the current step
-        reset when you leave. · <Link to="/" style={linkStyle}>Back to recipes</Link>
+        Your checkmarks and place are saved on this device for 24 hours, so a
+        reload picks up where you left off — open this page in a new tab and it
+        offers to resume. Use “Start over” to clear it. ·{" "}
+        <Link to="/" style={linkStyle}>Back to recipes</Link>
       </p>
     </main>
   );
@@ -391,6 +581,61 @@ const statusStyle: React.CSSProperties = {
   margin: "6px 0 0",
   fontSize: 11,
   color: muted,
+};
+
+const bannerStyle: React.CSSProperties = {
+  margin: "14px 16px 0",
+  padding: "12px 14px",
+  border: "1px solid #e0c9b8",
+  borderRadius: 14,
+  background: "#fdf3ec",
+};
+
+const bannerHeadStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  gap: 8,
+};
+
+const bannerTitleStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: 14,
+  fontWeight: 700,
+  color: "#211d18",
+};
+
+const bannerMetaStyle: React.CSSProperties = {
+  margin: "3px 0 0",
+  fontSize: 12,
+  color: muted,
+};
+
+const bannerActionsStyle: React.CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 8,
+  marginTop: 10,
+};
+
+const dismissBtnStyle: React.CSSProperties = {
+  appearance: "none",
+  border: "none",
+  background: "transparent",
+  color: muted,
+  fontSize: 20,
+  lineHeight: 1,
+  padding: "4px 6px",
+  minWidth: 32,
+  minHeight: 32,
+  cursor: "pointer",
+};
+
+const primaryChipStyle: React.CSSProperties = {
+  ...chipBtnStyle,
+  background: brand,
+  borderColor: brand,
+  color: "#fff",
+  fontWeight: 600,
 };
 
 const cardStyle: React.CSSProperties = {
