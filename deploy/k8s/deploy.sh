@@ -30,7 +30,11 @@ die() { printf '[deploy] error: %s\n' "$*" >&2; exit 1; }
 chmod 600 "$SECRETS_FILE"
 
 log "building and pushing ${IMAGE}"
-docker buildx build --push --platform linux/amd64 -t "${IMAGE}" .
+# NOTE: --target runtime is load-bearing. The Dockerfile ends with the
+# `development` stage (compose/devcontainer use it), and `docker build`
+# defaults to the LAST stage -- without this flag we'd ship the dev image
+# (CMD npm run dev, no source baked in) as the production tag.
+docker buildx build --target runtime --push --platform linux/amd64 -t "${IMAGE}" .
 
 log "upgrading release ${RELEASE} in ${NAMESPACE}"
 helm upgrade --install "${RELEASE}" "${CHART}" \
