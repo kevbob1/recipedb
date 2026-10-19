@@ -1,0 +1,53 @@
+# Dev-only stack (ticket #22). Production is the helm chart in helm/recipedb —
+# never deploy from here, and this file never touches /srv/recipedb.
+#
+#   make help          # list targets
+#   make up            # start the dev server on http://127.0.0.1:3000
+#   make test          # one-shot: vitest in the container
+#
+# Single service (no postgres sidecar): recipedb is SQLite-only.
+
+services:
+  dev:
+    build:
+      context: .
+      target: development
+      args:
+        DEV_UID: "${UID:-1000}"
+        DEV_GID: "${GID:-1000}"
+    # Run as the calling host user so bind-mounted files stay editable.
+    user: "${UID:-1000}:${GID:-1000}"
+    # Vite dev binds 127.0.0.1 inside the container by default, which the
+    # published port can never reach — hence the explicit --host.
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+    ports:
+      # Loopback only — this is a dev server, not an exposed endpoint.
+      - "127.0.0.1:${HOST_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: development
+      PORT: "3000"
+      # Ephemeral dev DB dir, mounted from the dev-data volume below. Never the
+      # real /data or /srv/recipedb.
+      DATA_DIR: /data
+      # Auth is optional in dev (the app warns and boots); override from the
+      # shell or a local .env when you need the login flow:
+      #   FAMILY_PASSWORD_HASH=... SESSION_SECRET=... make up
+      FAMILY_PASSWORD_HASH: "${FAMILY_PASSWORD_HASH:-}"
+      SESSION_SECRET: "${SESSION_SECRET:-}"
+    volumes:
+      # Whole repo bind-mounted for HMR + editing.
+      - .:/app:rw
+      # Named volume shadows the bind mount so the container's own
+      # node_modules (native bindings compiled for linux/glibc) is used and
+      # survives rebuilds. Without this the host's node_modules wins.
+      - node_modules:/app/node_modules
+      # Throwaway dev database + uploaded images.
+      - dev-data:/data
+      # Keeps npm's cache/logs out of the repo root; persists across runs.
+      - npm-home:/home/dev
+    restart: unless-stopped
+
+volumes:
+  node_modules:
+  dev-data:
+  npm-home:

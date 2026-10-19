@@ -1,0 +1,28 @@
+{
+  // Dev Containers view of the dev stack: reuses the compose service (and with
+  // it the `development` Dockerfile target, the host UID/GID, the repo bind
+  // mount and the node_modules/dev-data volumes). Keep the two in sync.
+  "name": "recipedb dev",
+  "dockerComposeFile": "../compose.yaml",
+  "service": "dev",
+  "workspaceFolder": "/app",
+  "shutdownAction": "stopCompose",
+  // Keep the compose command (`npm run dev`) instead of replacing it with
+  // `sleep infinity`: the dev server is what we want running in here.
+  "overrideCommand": false,
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": {
+      "label": "recipedb dev server",
+      "onAutoForward": "notify"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ]
+    }
+  }
+}

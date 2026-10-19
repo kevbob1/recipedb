@@ -51,6 +51,20 @@ npm run typecheck    # tsc --noEmit
 npm run db:generate  # drizzle-kit generate
 ```
 
+## Dev container (Docker)
+
+Node/TS commands run in the container (`make help` lists all targets; VS Code
+users can reopen in the container via `.devcontainer/devcontainer.json`):
+
+```bash
+make up        # dev server on http://127.0.0.1:3000 (Ctrl-C stops)
+make test      # vitest run          make typecheck   # typegen + tsc
+make build     # production build    make shell       # container shell
+make down      # stop (dev DB + node_modules volumes persist)
+```
+
+Production still deploys only via `helm/recipedb` — this stack is dev-only.
+
 ## Domain source of truth
 
 `GLOSSARY.md` defines the canonical domain terms. The schema, the FTS5
