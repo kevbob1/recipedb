@@ -341,10 +341,12 @@ function Step2Photo(props: {
   const [stream, setStream] = useState<MediaStream | null>(null);
 
   useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !stream) return;
+    video.srcObject = stream;
+    video.play().catch(() => {});
     return () => {
-      if (stream) {
-        for (const track of stream.getTracks()) track.stop();
-      }
+      for (const track of stream.getTracks()) track.stop();
     };
   }, [stream]);
 
@@ -356,10 +358,6 @@ function Step2Photo(props: {
         audio: false,
       });
       setStream(ms);
-      if (videoRef.current) {
-        videoRef.current.srcObject = ms;
-        await videoRef.current.play();
-      }
     } catch (err) {
       setStreamError(
         "Couldn't access the camera. You can also pick a file from your device below.",
