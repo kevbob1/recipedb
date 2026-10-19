@@ -4,7 +4,7 @@
  * This module is deliberately dependency-free: no DOM and no Node imports.
  * The browser path (app/lib/image-preprocess.ts) decodes/encodes with a
  * canvas and calls `preprocessPixels`; the Node tuning harness
- * (scripts/lib/ocr-node.ts) decodes/encodes with `sharp` and calls the very
+ * (app/lib/ocr-node.server.ts) decodes/encodes with `sharp` and calls the very
  * same `preprocessPixels`. Sharing the pipeline is the point — otherwise the
  * parameters Kevin tunes from the command line would not be the parameters
  * the browser actually runs.

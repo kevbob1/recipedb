@@ -66,7 +66,10 @@ describe("percentileStretch", () => {
     });
     const before = red(img, 0, 0);
     expect(before).toBe(90);
-    percentileStretch(img, 0.02);
+    // This test covers the stretch math, so it opts out of the default gain cap
+    // (DEFAULT_OCR_PREPROCESS.normalizeMaxGain = 2, which would map 90..109 to
+    // only 0..38 — see the two tests below for the cap itself).
+    percentileStretch(img, 0.02, 99);
     expect(red(img, 0, 0)).toBe(0); // 90 was the low percentile
     expect(red(img, 199, 0)).toBe(255); // 109 was the high percentile
   });
