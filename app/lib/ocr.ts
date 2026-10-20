@@ -1,16 +1,23 @@
 /**
  * Client-side OCR — tesseract.js.
  *
- * Ticket #5: snap-photo OCR runs entirely in the browser. The camera bytes
- * NEVER touch disk; we read them as a Blob from the input/camera stream,
- * hand them to tesseract.js, then let the Blob go out of scope. The
- * recognized text and a parsed draft are sent to the server, not the image.
+ * Ticket #5: snap-photo OCR runs in the browser. The camera bytes are read as a
+ * Blob from the input/camera stream and handed to tesseract.js, so the person
+ * sees text before anything leaves the page.
+ *
+ * Amended by #28: the ORIGINAL capture is no longer discarded. It is kept in
+ * the Add flow's state and uploaded (multipart, untouched) with the draft when
+ * the person saves; the server stores it under DATA_DIR/images/<id>/ and points
+ * recipes.image_filename at it so OCR can be re-run later. Deleting the recipe
+ * deletes the capture. This module still does not write to disk and is not the
+ * code that stores anything — it only recognizes. Server-side re-OCR lives in
+ * app/lib/scan-reocr.server.ts.
  *
  * Why tesseract.js runs in the browser: tesseract.js is a WASM build. It
- * doesn't fit the React Router server runtime (we'd need to spin up a
- * dedicated process and ship a language model). For an MVP single-household
- * use case the browser is the right place — the photo already lives there
- * for the capture step, so we never serialize the bytes across a network.
+ * doesn't fit the React Router server runtime without a dedicated process and a
+ * shipped language model, and the photo already lives in the page for capture.
+ * The Node side uses the same engine parameters (OCR_WORKER_PARAMS) and pixel
+ * pipeline (app/lib/image-ops.ts) for re-OCR, so tuning carries over.
  *
  * Preprocessing happens here, client-side, on a canvas — NOT with `sharp`.
  * `sharp` is a native Node addon and cannot run in the browser bundle; it is

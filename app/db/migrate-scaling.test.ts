@@ -85,7 +85,10 @@ afterAll(() => {
 describe("0001_scaling_quantity on an existing database", () => {
   it("applies only the new migration and never replays 0000_init", () => {
     const result = runMigrations();
-    expect(result.applied).toEqual(["0001_scaling_quantity"]);
+    expect(result.applied).toEqual([
+      "0001_scaling_quantity",
+      "0002_scan_image",
+    ]);
     expect(result.skipped).toEqual(["0000_init"]);
   });
 

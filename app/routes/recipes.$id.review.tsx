@@ -83,6 +83,26 @@ export default function ReviewRoute({ loaderData }: Route.ComponentProps) {
 
   const need = countNeedEyes(draft);
 
+  // Explicit re-run against the retained capture (#28). The endpoint returns
+  // fresh text only; ReviewEditor stages it until the person approves.
+  const reOcr =
+    initial.imageFilename && initial.sourceType === "scan"
+      ? async (): Promise<string> => {
+        const res = await fetch("/api/re-ocr", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: loaderData.recipeId }),
+        });
+        const json = (await res.json().catch(() => null)) as
+          | { text?: string; error?: string; message?: string }
+          | null;
+        if (!res.ok || !json || typeof json.text !== "string") {
+          throw new Error(json?.message ?? json?.error ?? "Couldn't re-run OCR.");
+        }
+        return json.text;
+      }
+      : undefined;
+
   async function save() {
     setSaving(true);
     setError(null);
@@ -169,7 +189,7 @@ export default function ReviewRoute({ loaderData }: Route.ComponentProps) {
           Saved — your changes are now the stored recipe.
         </p>
       ) : null}
-      <ReviewEditor draft={draft} setDraft={setDraft} />
+      <ReviewEditor draft={draft} setDraft={setDraft} reOcr={reOcr} />
       {error ? <p style={{ color: "#9a3030", fontSize: 13 }}>{error}</p> : null}
       <div style={{ display: "flex", gap: 10, marginTop: 18, position: "sticky", bottom: 0, background: "#fff", padding: "12px 0", borderTop: "1px solid #e3ddd2" }}>
         <Link to="/add" style={{ ...ghostBtn, textDecoration: "none", display: "inline-block" }}>+ Add another</Link>

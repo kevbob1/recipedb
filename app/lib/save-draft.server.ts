@@ -33,6 +33,7 @@ import { getDb } from "../db/client.server";
 import type { RecipeDraft } from "./draft";
 import { normalizeTag, trimOnly, trimOnlyRequired } from "./normalize";
 import { resolveQuantity } from "./quantity-parse";
+import { deleteRecipeImage } from "./scan-image.server";
 
 export interface SaveDraftResult {
   recipeId: number;
@@ -49,6 +50,7 @@ interface PreparedDraft {
     sourceType: RecipeDraft["sourceType"];
     sourceUrl: string | null;
     rawOcrText: string | null;
+    imageFilename: string | null;
   };
   ingredients: Omit<NewIngredientLine, "recipeId">[];
   steps: Omit<NewStep, "recipeId">[];
@@ -123,6 +125,7 @@ function prepareDraft(draft: RecipeDraft): PreparedDraft {
       sourceType: draft.sourceType,
       sourceUrl: trimOnly(draft.sourceUrl),
       rawOcrText: trimOnly(draft.rawOcrText),
+      imageFilename: trimOnly(draft.imageFilename),
     },
     ingredients,
     steps,
@@ -231,7 +234,9 @@ export function updateDraft(id: number, draft: RecipeDraft): SaveDraftResult {
 
 /**
  * Delete a recipe. Child rows are removed by ON DELETE CASCADE and the FTS
- * triggers keep recipe_fts consistent. Returns false when the id did not exist.
+ * triggers keep recipe_fts consistent. The retained scan capture under
+ * DATA_DIR/images/<id>/ is removed too — a stored image lives only as long as
+ * its recipe (#28). Returns false when the id did not exist.
  */
 export function deleteRecipe(id: number): boolean {
   const deleted = getDb()
@@ -239,7 +244,9 @@ export function deleteRecipe(id: number): boolean {
     .where(eq(recipes.id, id))
     .returning({ id: recipes.id })
     .get();
-  return deleted !== undefined;
+  if (!deleted) return false;
+  deleteRecipeImage(id);
+  return true;
 }
 
 /**
@@ -269,6 +276,7 @@ export function loadDraft(id: number): RecipeDraft | null {
     sourceType: recipe.sourceType,
     sourceUrl: recipe.sourceUrl,
     rawOcrText: recipe.rawOcrText,
+    imageFilename: recipe.imageFilename,
     favorite: recipe.favorite,
     ingredients: ings
       .sort((a, b) => a.position - b.position)

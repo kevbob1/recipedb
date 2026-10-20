@@ -1,10 +1,11 @@
 /**
  * Browser-side OCR image preprocessing (canvas + `createImageBitmap`).
  *
- * The photo never leaves the page: we decode the Blob, draw it to a canvas,
- * run the shared pixel pipeline from app/lib/image-ops.ts, and hand tesseract
- * a *new* Blob. The caller's original Blob is untouched, so nothing is written
- * to disk and no bytes are serialized to the server.
+ * The preprocessed Blob never leaves the page: we decode the original, draw it
+ * to a canvas, run the shared pixel pipeline from app/lib/image-ops.ts, and hand
+ * tesseract a *new* Blob. The original capture itself is retained by the app
+ * (uploaded once on save, #28), but this preprocessing output is never sent
+ * anywhere.
  *
  * Why preprocessing at all: tesseract.js on a raw 12MP phone photo of a
  * printed page sees small, soft, unevenly lit glyphs and returns garbage

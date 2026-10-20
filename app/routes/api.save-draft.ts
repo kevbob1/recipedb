@@ -1,39 +1,23 @@
 /**
  * Action endpoint: save a draft.
  *
- * POST RecipeDraft -> { recipeId: number }
+ * POST RecipeDraft (application/json) -> { recipeId: number }
+ * POST multipart/form-data { draft: RecipeDraft, image?: File } -> { recipeId }
  *
- * Bridges the client-side editor (Add flow's review screen, future "Edit
- * existing draft" screen) to the storage layer. Validation lives in
- * saveDraft; this route is a thin transport.
+ * The JSON form is used by URL imports and manual entries. A scan import posts
+ * multipart: the ORIGINAL capture bytes ride alongside the draft, and the
+ * server writes them untouched to DATA_DIR/images/<id>/original.<ext> and points
+ * `recipes.image_filename` at it (#28). The artifact is retained indefinitely;
+ * only deleting the recipe removes it.
+ *
+ * Validation lives in saveDraft and scan-image.server; the transport is in
+ * ../lib/save-draft-http.server.ts so this route exports only route code.
  */
 import type { Route } from "./+types/api.save-draft";
-import { saveDraft, SaveError } from "../lib/save-draft.server";
-import type { RecipeDraft } from "../lib/draft";
-import { requireAuth } from "../lib/auth.server";
+import { handleSaveDraftRequest } from "../lib/save-draft-http.server";
 
 export async function action({ request }: Route.ActionArgs) {
-  // Auth gate: this is the write path, gate before any DB work.
-  requireAuth(request, { isApi: true });
-  if (request.method !== "POST") {
-    return Response.json({ error: "method-not-allowed" }, { status: 405 });
-  }
-  let body: RecipeDraft;
-  try {
-    body = (await request.json()) as RecipeDraft;
-  } catch {
-    return Response.json({ error: "bad-json" }, { status: 400 });
-  }
-  try {
-    const result = saveDraft(body);
-    return Response.json(result);
-  } catch (err) {
-    if (err instanceof SaveError) {
-      return Response.json({ error: err.code, message: err.message }, { status: 400 });
-    }
-    console.error("[api.save-draft] unexpected error", err);
-    return Response.json({ error: "internal" }, { status: 500 });
-  }
+  return handleSaveDraftRequest(request);
 }
 
 export function loader() {

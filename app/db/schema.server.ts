@@ -54,8 +54,14 @@ export const recipes = sqliteTable(
     /** Where the recipe came from. */
     sourceType: text("source_type").notNull().$type<SourceType>(),
     sourceUrl: text("source_url"),
-    /** Raw OCR text captured at import (transient photo is not stored). */
+    /** Raw OCR text captured at import. */
     rawOcrText: text("raw_ocr_text"),
+    /**
+     * Relative path under DATA_DIR/images/ of the retained source capture
+     * (scan upload) or imported image (#28). Null when the recipe has no
+     * stored image. Deleted with the recipe row.
+     */
+    imageFilename: text("image_filename"),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),

@@ -13,6 +13,8 @@ export default [
   route("add", "routes/add.tsx"),
   route("api/import-url", "routes/api.import-url.ts"),
   route("api/save-draft", "routes/api.save-draft.ts"),
+  // Explicit re-OCR against a retained scan capture (#28).
+  route("api/re-ocr", "routes/api.re-ocr.ts"),
   // Read-only single-page read view (#25). The home list lands here; review
   // and cook are one tap away from it.
   route("recipes/:id", "routes/recipes.$id.tsx"),

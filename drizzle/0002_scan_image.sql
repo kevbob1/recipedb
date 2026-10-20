@@ -1,0 +1,16 @@
+-- 0002_scan_image.sql
+-- Retain the original scan capture with the recipe (#28).
+--
+-- The stored path is relative to DATA_DIR/images/ ("<recipeId>/original.<ext>")
+-- and is nullable: manual entries and older scans have no image. The artifact is
+-- removed when the recipe row is deleted.
+--
+-- WARNING: this file is checksummed into migrations-applied.json by
+-- app/db/migrate.server.ts. Never edit it after it has been applied anywhere —
+-- add 0003_* instead.
+--
+-- Hand-written: the drizzle-kit in this repo reports the 0000_snapshot.json as
+-- "unsupported version" and cannot diff it, so `drizzle-kit generate` emits
+-- nothing. Same approach as 0000_init.sql / 0001_scaling_quantity.sql. The
+-- statement below matches app/db/schema.server.ts.
+ALTER TABLE `recipes` ADD `image_filename` text;

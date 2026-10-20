@@ -47,6 +47,9 @@ export async function loader({ request }: Route.LoaderArgs) {
 type Step = 1 | 2 | 3 | 4;
 type Entry = "url" | "photo" | "type" | null;
 
+/** Mirror of the server's upload ceiling; the server is authoritative. */
+const MAX_SCAN_UPLOAD_BYTES = 15 * 1024 * 1024;
+
 export default function AddRoute(_args: Route.ComponentProps) {
   return (
     <main style={{ maxWidth: 640, margin: "0 auto", padding: "1.5rem 1rem 8rem", fontFamily: "system-ui, sans-serif" }}>
@@ -62,6 +65,9 @@ function StepperShell() {
   const [urlInput, setUrlInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [photoState, setPhotoState] = useState<"idle" | "capturing" | "ocr" | "done" | "error">("idle");
+  // The original capture is retained for this import and uploaded with the
+  // draft, so the server can keep it for re-OCR (#28). No downscale.
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [savedRecipeId, setSavedRecipeId] = useState<number | null>(null);
   const [submitInFlight, setSubmitInFlight] = useState(false);
 
@@ -102,7 +108,7 @@ function StepperShell() {
         setError(msg);
         return;
       }
-      setDraft({ ...json.draft, sourceType: "url" });
+      setDraft({ ...json.draft, sourceType: "url", imageFilename: json.imageFilename });
       setStep(3);
     } finally {
       setSubmitInFlight(false);
@@ -111,12 +117,19 @@ function StepperShell() {
 
   async function captureAndOcr(file: File) {
     setError(null);
+    if (file.size > MAX_SCAN_UPLOAD_BYTES) {
+      setError(
+        `That image is larger than ${MAX_SCAN_UPLOAD_BYTES / (1024 * 1024)}MB. Retake it or pick a smaller file.`,
+      );
+      return;
+    }
     setPhotoState("capturing");
+    setPhotoFile(file);
     try {
-      // Camera bytes stay in memory; we never write the file to disk.
-      const blob = file.slice(0, file.size, file.type || "image/*");
+      // OCR reads the same original bytes in this tab; the file is also kept
+      // and uploaded with the draft so the server can retain it (#28).
       setPhotoState("ocr");
-      const text = await recognizeText(blob);
+      const text = await recognizeText(file);
       const ocrDraft = ocrTextToDraft(text);
       ocrDraft.sourceType = "scan";
       ocrDraft.category = guessCategory(ocrDraft.title || text);
@@ -133,10 +146,21 @@ function StepperShell() {
     setError(null);
     setSubmitInFlight(true);
     try {
+      // Multipart when a scan is attached: the draft JSON plus the untouched
+      // original bytes. URL/manual drafts keep the JSON transport.
+      let body: BodyInit;
+      if (photoFile) {
+        const form = new FormData();
+        form.set("draft", JSON.stringify(draft));
+        form.set("image", photoFile, photoFile.name || "capture.png");
+        body = form;
+      } else {
+        body = JSON.stringify(draft);
+      }
       const res = await fetch("/api/save-draft", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(draft),
+        ...(photoFile ? {} : { headers: { "content-type": "application/json" } }),
+        body,
       });
       const json = (await res.json()) as
         | { recipeId: number }
@@ -160,6 +184,7 @@ function StepperShell() {
     setUrlInput("");
     setError(null);
     setPhotoState("idle");
+    setPhotoFile(null);
     setSavedRecipeId(null);
   }
 
@@ -195,6 +220,7 @@ function StepperShell() {
           onBack={() => setStep(2)}
           onSave={save}
           saving={submitInFlight}
+          onReOcr={photoFile ? () => recognizeText(photoFile) : undefined}
         />
       ) : null}
       {step === 4 ? (
@@ -251,7 +277,7 @@ function Step1Pick({ onPick }: { onPick: (e: Entry) => void }) {
         >
           <span style={{ fontSize: 22 }}>📷</span>
           <strong>Snap a photo of a printout</strong>
-          <span style={{ color: "#6b655c", fontSize: 12 }}>Local OCR — the photo is read once and discarded</span>
+          <span style={{ color: "#6b655c", fontSize: 12 }}>Local OCR — the photo is kept with the recipe for re-runs</span>
         </button>
         <button
           type="button"
@@ -387,8 +413,9 @@ function Step2Photo(props: {
     canvas.toBlob(
       (blob) => {
         if (blob) {
-          // Camera bytes never touch disk: we keep the Blob in memory and
-          // pass it directly to OCR. No data URL, no file input, no upload.
+          // The Blob stays local for OCR now, and the same bytes are kept in
+          // state so they ride along with the draft on save (retained by the
+          // server for re-OCR, #28).
           const file = new File([blob], "capture.png", { type: blob.type });
           props.onCapture(file);
         }
@@ -408,8 +435,8 @@ function Step2Photo(props: {
   return (
     <section>
       <h2 style={{ margin: "0 0 4px" }}>Snap a photo of a printout</h2>
-      <p style={{ color: "#6b655c", marginTop: 0 }}>Local OCR. The photo is read once and discarded — never stored.</p>
-      <p style={{ fontSize: 12, color: "#6b655c", fontStyle: "italic" }}>📷 photo discarded after import</p>
+      <p style={{ color: "#6b655c", marginTop: 0 }}>Local OCR. The original photo is uploaded once with the draft and kept with the recipe so OCR can be re-run.</p>
+      <p style={{ fontSize: 12, color: "#6b655c", fontStyle: "italic" }}>📷 original photo retained with the recipe</p>
       {stream ? (
         <div>
           <video ref={videoRef} muted playsInline style={{ width: "100%", borderRadius: 12, background: "#000" }} />
@@ -427,12 +454,12 @@ function Step2Photo(props: {
           <button type="button" onClick={startCamera} style={entryBtnStyle}>
             <span style={{ fontSize: 22 }}>📷</span>
             <strong>Use camera</strong>
-            <span style={{ color: "#6b655c", fontSize: 12 }}>Photo stays in this tab; tesseract.js reads it locally</span>
+            <span style={{ color: "#6b655c", fontSize: 12 }}>Photo is read locally now and kept with the saved recipe</span>
           </button>
           <label style={entryBtnStyle}>
             <span style={{ fontSize: 22 }}>🖼️</span>
             <strong>Or pick an image file</strong>
-            <span style={{ color: "#6b655c", fontSize: 12 }}>File is read in memory; never uploaded</span>
+            <span style={{ color: "#6b655c", fontSize: 12 }}>File is read locally and uploaded once with the draft</span>
             <input
               type="file"
               accept="image/*"
@@ -479,12 +506,13 @@ function Step3Review(props: {
   onBack: () => void;
   onSave: () => void;
   saving: boolean;
+  onReOcr?: () => Promise<string>;
 }) {
   return (
     <section>
       <h2 style={{ margin: "0 0 4px" }}>Review the draft</h2>
       <p style={{ color: "#6b655c", marginTop: 0 }}>Badges flag what we couldn't trust. Fix what needs fixing, then save.</p>
-      <ReviewEditor draft={props.draft} setDraft={props.setDraft} />
+      <ReviewEditor draft={props.draft} setDraft={props.setDraft} reOcr={props.onReOcr} />
       {props.error ? <p style={{ color: "#9a3030", fontSize: 13 }}>{props.error}</p> : null}
       <div style={{ display: "flex", gap: 10, marginTop: 18, position: "sticky", bottom: 0, background: "#fff", padding: "12px 0", borderTop: "1px solid #e3ddd2" }}>
         <button type="button" onClick={props.onBack} style={ghostBtn}>Back</button>
@@ -528,10 +556,48 @@ function Step4Saved(props: { recipeId: number | null; count: number; onAddAnothe
 export function ReviewEditor({
   draft,
   setDraft,
+  reOcr,
 }: {
   draft: RecipeDraft;
   setDraft: (d: RecipeDraft) => void;
+  /**
+   * Re-run OCR for this recipe and resolve with fresh text (#28). The text is
+   * shown for approval; only the explicit "Use this text" button touches the
+   * draft, so a person's edits are never auto-overwritten.
+   */
+  reOcr?: () => Promise<string>;
 }) {
+  const [ocrPreview, setOcrPreview] = useState<string | null>(null);
+  const [ocrRunning, setOcrRunning] = useState(false);
+  const [ocrError, setOcrError] = useState<string | null>(null);
+
+  async function runOcr() {
+    if (!reOcr) return;
+    setOcrRunning(true);
+    setOcrError(null);
+    try {
+      setOcrPreview(await reOcr());
+    } catch (err) {
+      setOcrError((err as Error).message ?? "Couldn't re-run OCR.");
+    } finally {
+      setOcrRunning(false);
+    }
+  }
+
+  /**
+   * Explicit approval: replace the editable fields with the fresh OCR parse.
+   * Nothing here runs automatically — the preview is the staging area.
+   */
+  function applyOcr() {
+    if (ocrPreview === null) return;
+    const next = ocrTextToDraft(ocrPreview);
+    next.sourceType = "scan";
+    next.category = guessCategory(next.title || ocrPreview);
+    next.imageFilename = draft.imageFilename ?? null;
+    setDraft(next);
+    setOcrPreview(null);
+  }
+
   return (
     <div style={{ display: "grid", gap: 12 }}>
       <FieldLabel label="Title" badge={badge(draft.titleConfidence)}>
@@ -633,6 +699,36 @@ export function ReviewEditor({
         />
         ★ Favorite
       </label>
+
+      {reOcr ? (
+        <div style={{ border: "1px solid #e3ddd2", borderRadius: 12, padding: "10px 12px", background: "#fdfcf8" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <strong style={{ fontSize: 13 }}>OCR source</strong>
+            <button type="button" onClick={runOcr} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12 }} disabled={ocrRunning}>
+              {ocrRunning ? "Re-reading…" : "Re-run OCR"}
+            </button>
+          </div>
+          <p style={{ color: "#6b655c", fontSize: 12, margin: "6px 0 0" }}>
+            The stored capture is re-read with the current settings. Nothing changes until you approve it.
+          </p>
+          {ocrError ? <p style={{ color: "#9a3030", fontSize: 12, margin: "6px 0 0" }}>{ocrError}</p> : null}
+          {ocrPreview !== null ? (
+            <div style={{ marginTop: 8 }}>
+              <pre style={{ background: "#1f1d1a", color: "#f6f4ee", padding: 12, borderRadius: 10, fontSize: 12, whiteSpace: "pre-wrap", overflowX: "auto", maxHeight: 240 }}>
+                {ocrPreview || "(no text recognized)"}
+              </pre>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button type="button" onClick={applyOcr} style={primaryBtn}>
+                  Use this text
+                </button>
+                <button type="button" onClick={() => setOcrPreview(null)} style={ghostBtn}>
+                  Keep my edits
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <details>
         <summary style={{ cursor: "pointer", color: "#6b655c", fontSize: 12 }}>View source</summary>

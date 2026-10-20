@@ -85,7 +85,7 @@ ingress:
 # -----------------------------------------------------------------------------
 persistence:
   enabled: true
-  size: 5Gi
+  size: 15Gi
   accessModes:
     - ReadWriteOnce
   # "" = use the cluster default StorageClass (local-path).

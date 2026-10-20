@@ -4,6 +4,7 @@
  *
  *   npx tsx scripts/ocr-tune.ts                     # all fixtures, all variants
  *   npx tsx scripts/ocr-tune.ts --fixture 044713    # one photo
+ *   npx tsx scripts/ocr-tune.ts --dir /data/images  # sweep stored scans too
  *   npx tsx scripts/ocr-tune.ts --full              # dump the whole text
  *   npx tsx scripts/ocr-tune.ts --threshold adaptive --psm 6
  *
@@ -32,6 +33,7 @@ import {
 import { scoreOcrText } from "../app/lib/ocr-metrics";
 import {
   autoOrientOnly,
+  collectImagePaths,
   createOcrSession,
   fixturePaths,
   preprocessFixture,
@@ -133,6 +135,8 @@ function buildVariants(args: Args): Variant[] {
 
 interface Args {
   fixture?: string[];
+  /** Extra directory to sweep recursively (e.g. a copied DATA_DIR/images). */
+  dir?: string;
   variant?: string[];
   full: boolean;
   out: string;
@@ -152,6 +156,9 @@ function parseArgs(argv: string[]): Args {
     switch (flag) {
       case "--fixture":
         args.fixture = [...(args.fixture ?? []), ...(value ?? "").split(",")];
+        break;
+      case "--dir":
+        args.dir = value;
         break;
       case "--variant":
         args.variant = [...(args.variant ?? []), ...(value ?? "").split(",")];
@@ -177,8 +184,9 @@ function parseArgs(argv: string[]): Args {
         break;
       case "--help":
         console.log(
-          "usage: npx tsx scripts/ocr-tune.ts [--fixture=substr] [--variant=substr] " +
-            "[--psm=3|6] [--threshold=none|otsu|adaptive] [--full] [--no-write] [--out=dir]",
+          "usage: npx tsx scripts/ocr-tune.ts [--fixture=substr] [--dir=images-dir] " +
+            "[--variant=substr] [--psm=3|6] [--threshold=none|otsu|adaptive] " +
+            "[--full] [--no-write] [--out=dir]",
         );
         process.exit(0);
         break;
@@ -209,13 +217,17 @@ const padStart = (value: string | number, width: number): string =>
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const variants = buildVariants(args);
-  const fixtures = fixturePaths().filter(
+  // Fixtures always participate; --dir adds the real retained captures from a
+  // DATA_DIR/images tree (recursively) so tuning covers what actually shipped.
+  const fixtures = [...fixturePaths(), ...(args.dir ? collectImagePaths(args.dir) : [])].filter(
     (file) =>
       !args.fixture || args.fixture.some((needle) => file.includes(needle)),
   );
 
   if (fixtures.length === 0) {
-    console.error("no fixtures matched; expected tests/fixtures/ocr/*.jpg");
+    console.error(
+      "no fixtures matched; expected tests/fixtures/ocr/*.jpg (or pass --dir=<images dir>)",
+    );
     process.exit(1);
   }
 
@@ -237,7 +249,14 @@ async function main(): Promise<void> {
   const rows: Row[] = [];
   try {
     for (const file of fixtures) {
-      const name = path.basename(file, path.extname(file));
+      const dirRoot = args.dir ? path.resolve(args.dir) : null;
+      const inDir =
+        dirRoot !== null &&
+        path.resolve(file).startsWith(dirRoot + path.sep);
+      // Stored captures are named <recipeId>/original so runs are distinguishable.
+      const name = inDir
+        ? path.relative(dirRoot, file).replace(/\.[^.]+$/, "")
+        : path.basename(file, path.extname(file));
       const outDir = path.join(args.out, name);
       console.log(`\n=== ${path.basename(file)} ===`);
 

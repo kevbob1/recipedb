@@ -37,6 +37,28 @@ export function fixturePaths(dir: string = FIXTURE_DIR): string[] {
     .map((name) => path.join(dir, name));
 }
 
+/**
+ * Recursively collect stored captures (DATA_DIR/images/<recipeId>/original.*)
+ * so `scripts/ocr-tune.ts --dir` can sweep real retained scans. Sorted for
+ * stable output.
+ */
+export function collectImagePaths(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  const walk = (current: string): void => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (/\.(jpe?g|png|webp)$/i.test(entry.name)) {
+        out.push(full);
+      }
+    }
+  };
+  walk(dir);
+  return out.sort();
+}
+
 /** Where tesseract.js caches eng.traineddata. Never the repo root. */
 export function defaultCachePath(): string {
   return process.env.OCR_TESSDATA_CACHE ??

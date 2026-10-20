@@ -54,7 +54,11 @@ describe("migrations + FTS5", () => {
 
     // Fresh DB: the whole journal lands, 0000_init included (no replay dance
     // needed — a fresh file has nothing applied).
-    expect(first.applied).toEqual(["0000_init", "0001_scaling_quantity"]);
+    expect(first.applied).toEqual([
+      "0000_init",
+      "0001_scaling_quantity",
+      "0002_scan_image",
+    ]);
 
     // Re-running is a no-op.
     const second = runMigrations();

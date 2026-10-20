@@ -84,8 +84,17 @@ export interface RecipeDraft {
   /** Provenance. */
   sourceType: "url" | "scan" | "manual";
   sourceUrl: string | null;
-  /** Raw OCR text captured at import (transient photo is not stored). */
+  /**
+   * Raw OCR text captured at import. The original capture itself is retained
+   * server-side (recipes.image_filename) so OCR can be re-run later (#28).
+   */
   rawOcrText: string | null;
+  /**
+   * Path of the retained source image, relative to DATA_DIR/images/
+   * (e.g. "12/original.png"). Null for manual entries and older imports.
+   * Deleted only when the recipe is deleted.
+   */
+  imageFilename?: string | null;
   /** Whether the recipe is a favorite. */
   favorite: boolean;
   ingredients: DraftIngredient[];
@@ -112,6 +121,7 @@ export function blankDraft(): RecipeDraft {
     sourceType: "manual",
     sourceUrl: null,
     rawOcrText: null,
+    imageFilename: null,
     favorite: false,
     ingredients: [],
     steps: [],
