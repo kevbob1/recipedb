@@ -27,7 +27,7 @@ import {
 } from "drizzle-orm/sqlite-core";
 
 import { CATEGORIES, type Category } from "../lib/categories";
-import type { QtyParseStatus } from "../lib/quantity-parse";
+import type { QtyParseStatus } from "../lib/ingredient-line";
 
 export { CATEGORIES, type Category };
 
@@ -84,7 +84,7 @@ export const recipes = sqliteTable(
  *
  * The `qtyAmount`/`qtyAmount2`/`qtyUnitNormalized`/`qtyParseStatus` columns are
  * the derived numeric view (decision on #15, #16): additive, nullable, and
- * written by the parser in app/lib/quantity-parse.ts. A scaled view is always
+ * written by the parser in app/lib/ingredient-line.ts. A scaled view is always
  * derived (amount x factor) and never rewrites `qty`.
  */
 export const ingredientLines = sqliteTable(
@@ -109,7 +109,7 @@ export const ingredientLines = sqliteTable(
     qtyAmount: real("qty_amount"),
     /** High end of a range ("2-3" -> 3). Null for single values. */
     qtyAmount2: real("qty_amount2"),
-    /** Canonical unit token from app/lib/units.ts; null when unknown/absent. */
+    /** Canonical unit token from app/lib/ingredient-line.ts; null when unknown/absent. */
     qtyUnitNormalized: text("qty_unit_normalized"),
     /**
      * parsed | range | unparseable | unparsed. `unparsed` is the column default

@@ -24,11 +24,10 @@ import {
   type DraftIngredient,
   type RecipeDraft,
   blankDraft,
-  clearParsedQuantity,
   countNeedEyes,
   ingredientConfidence,
 } from "../lib/draft";
-import { formatAmount, scaledIngredientRows } from "../lib/quantity-parse";
+import { display, formatAmount, setQty } from "../lib/ingredient-line";
 import { recognizeText, ocrTextToDraft, guessCategory } from "../lib/ocr";
 import { requireAuth } from "../lib/auth.server";
 
@@ -829,13 +828,17 @@ function TagsEditor({ tags, onChange }: { tags: string[]; onChange: (t: string[]
 }
 
 /**
- * Hand-editing the qty text clears the derived numeric view. The write path
- * re-parses from the text (see resolveQuantity), which is what "a manual qty
- * edit resets the row to unparsed" means in the decision on #15: numbers we
- * derived from text the person has since replaced are not trusted.
+ * Hand-editing qty or unit rebuilds the line from its text. `setQty` takes the
+ * whole (qty, unit) pair and re-derives the numeric view, so numbers derived
+ * from text the person has since replaced can never linger: what "a manual qty
+ * edit resets the derived fields" means in the decision on #15.
  */
-function applyQtyEdit(ing: DraftIngredient, qty: string): DraftIngredient {
-  return clearParsedQuantity({ ...ing, qty });
+function applyQtyEdit(
+  ing: DraftIngredient,
+  qty: string,
+  unit: string | null = ing.unit,
+): DraftIngredient {
+  return setQty(ing, qty, unit);
 }
 
 /** Factors offered by the review screen; anything else goes in the custom box. */
@@ -914,7 +917,7 @@ export function ScaledIngredientList({
         <p style={{ color: "#6b655c", fontSize: 13 }}>Nothing to scale yet.</p>
       ) : (
         <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-          {scaledIngredientRows(ingredients, factor).map((row, i) => (
+          {display(ingredients, factor).map((row, i) => (
             <li
               key={i}
               style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "4px 0", fontSize: 14, borderTop: i === 0 ? "none" : "1px solid #ece8de" }}
@@ -977,7 +980,7 @@ function IngredientListEditor({
                 aria-label="unit"
                 value={ing.unit ?? ""}
                 onChange={(e) =>
-                  updateIng(i, { ...ing, unit: e.target.value || null, qtyUnitNormalized: null })
+                  updateIng(i, applyQtyEdit(ing, ing.qty, e.target.value || null))
                 }
                 placeholder="unit"
                 style={{ ...inputStyle, flex: 1 }}

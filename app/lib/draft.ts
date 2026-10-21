@@ -17,7 +17,7 @@
  */
 
 import { CATEGORIES, type Category } from "./categories";
-import type { QtyParseStatus } from "./quantity-parse";
+import type { QtyParseStatus } from "./ingredient-line";
 
 /** Closed MVP category list, re-exported for client code. */
 export { CATEGORIES };
@@ -31,10 +31,10 @@ export type Confidence = "ok" | "warn" | "bad";
  * Matches the persisted four-part shape (qty, unit, item, note) plus the raw
  * line text and the per-line confidence badge.
  *
- * The `qty*` derived fields are the numeric view from app/lib/quantity-parse.ts
+ * The `qty*` derived fields are the numeric view from app/lib/ingredient-line.ts
  * (decision on #15): optional, because a brand-new manual row has nothing to
- * carry. Editing the qty text by hand clears them, and the save path
- * re-parses (see resolveQuantity).
+ * carry. They are only ever refreshed from the text — editing qty or unit goes
+ * through `setQty` in that module, which re-parses both.
  */
 export interface DraftIngredient {
   /** Raw line as captured (e.g. "2-3 cloves garlic, minced"). */
@@ -49,7 +49,7 @@ export interface DraftIngredient {
   qtyAmount?: number | null;
   /** High end of a range ("2-3" -> 3); null for a single value. */
   qtyAmount2?: number | null;
-  /** Canonical unit token (app/lib/units.ts); null when unknown/absent. */
+  /** Canonical unit token (app/lib/ingredient-line.ts); null when unknown/absent. */
   qtyUnitNormalized?: string | null;
   /** parsed | range | unparseable | unparsed. */
   qtyParseStatus?: QtyParseStatus;
@@ -125,24 +125,6 @@ export function blankDraft(): RecipeDraft {
     favorite: false,
     ingredients: [],
     steps: [],
-  };
-}
-
-/**
- * Clear the derived numeric view of an ingredient line (#16).
- *
- * The review screen calls this whenever the qty text is edited by hand: numbers
- * derived from text the person has since replaced are not trusted, so the row
- * goes back to the column default `unparsed` and the write path re-parses from
- * the text (see resolveQuantity in ./quantity-parse).
- */
-export function clearParsedQuantity(ing: DraftIngredient): DraftIngredient {
-  return {
-    ...ing,
-    qtyAmount: null,
-    qtyAmount2: null,
-    qtyUnitNormalized: null,
-    qtyParseStatus: "unparsed",
   };
 }
 

@@ -13,7 +13,7 @@
  * resolved status, so a second run scans nothing. qty text is never modified.
  */
 import { getRawSqlite } from "../app/db/client.server";
-import { parseQuantity } from "../app/lib/quantity-parse";
+import { fromText } from "../app/lib/ingredient-line";
 
 export interface BackfillCounts {
   scanned: number;
@@ -52,11 +52,11 @@ export function backfillQuantities(): BackfillCounts {
 
   const run = sqlite.transaction(() => {
     for (const row of rows) {
-      const p = parseQuantity(row.qty, row.unit);
-      if (p.status === "parsed") counts.parsed += 1;
-      else if (p.status === "range") counts.ranges += 1;
+      const p = fromText(row.qty, row.unit);
+      if (p.qtyParseStatus === "parsed") counts.parsed += 1;
+      else if (p.qtyParseStatus === "range") counts.ranges += 1;
       else counts.unparseable += 1;
-      update.run(p.amount, p.amount2, p.unitNormalized, p.status, row.id);
+      update.run(p.qtyAmount, p.qtyAmount2, p.qtyUnitNormalized, p.qtyParseStatus, row.id);
     }
   });
   run();
