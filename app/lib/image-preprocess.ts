@@ -13,8 +13,14 @@
  * side to ~2400px + grayscale + normalize + unsharp is what moves it from
  * "garbled" to "recognizable"; see scripts/ocr-tune.ts for the measurement.
  *
- * This module must stay DOM-only — no Node imports (`sharp` lives in
- * scripts/ and tests only, never in the app bundle).
+ * SEAM: this file is intentionally NOT part of app/lib/scan/. That module is
+ * Node-only (it imports `sharp` and node:fs), and `sharp` is a native addon that
+ * cannot enter the client bundle. The two halves share only the pixel contract
+ * in app/lib/image-ops.ts, which is what keeps browser preprocessing and the
+ * Node re-OCR path — and the tuning harness measuring both — in step.
+ *
+ * This module must stay DOM-only — no Node imports (`sharp` lives in the Scan
+ * module and tests only, never in the app bundle).
  */
 
 import {
@@ -59,7 +65,12 @@ export async function preprocessImageBlob(
   const height = Math.max(1, Math.round(srcHeight * scale));
 
   const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  // `AnyCanvas` is a union, so `getContext` widens to every rendering context.
+  // Narrow it to the 2d contexts this pipeline draws with.
+  const ctx = canvas.getContext("2d", { willReadFrequently: true }) as
+    | CanvasRenderingContext2D
+    | OffscreenCanvasRenderingContext2D
+    | null;
   if (!ctx) {
     bitmap.close?.();
     throw new Error("image-preprocess: 2d canvas context unavailable");
@@ -78,11 +89,12 @@ export async function preprocessImageBlob(
   preprocessPixels(image, options);
   ctx.putImageData(imageData, 0, 0);
 
-  // Binarized output compresses better as PNG; photographic output as JPEG.
-  const outBlob = await encodeCanvas(
-    canvas,
-    options.threshold === "none" ? "image/jpeg" : "image/png",
-  );
+  // Always lossless PNG: tesseract is handed pixels, not a photo, and a lossy
+  // re-encode is exactly the artifact the pixel pipeline just removed. (The old
+  // split — JPEG-0.92 when thresholding was off — made the encode format depend
+  // on a tuning knob, so two variants differed by compression as well as by
+  // pixels.)
+  const outBlob = await encodeCanvas(canvas);
 
   return {
     blob: outBlob,
@@ -138,12 +150,14 @@ function createCanvas(width: number, height: number): AnyCanvas {
   throw new Error("image-preprocess: no canvas implementation available");
 }
 
-async function encodeCanvas(canvas: AnyCanvas, type: string): Promise<Blob> {
+/**
+ * Encode the preprocessed canvas as a lossless PNG. Both branches take the same
+ * path so the browser and the Node twin (app/lib/scan/preprocess.server.ts, via
+ * sharp) hand tesseract the same bytes semantics.
+ */
+async function encodeCanvas(canvas: AnyCanvas): Promise<Blob> {
   if ("convertToBlob" in canvas) {
-    return canvas.convertToBlob({
-      type,
-      quality: type === "image/jpeg" ? 0.92 : undefined,
-    });
+    return canvas.convertToBlob({ type: "image/png" });
   }
   return new Promise((resolve, reject) => {
     canvas.toBlob(
@@ -151,8 +165,7 @@ async function encodeCanvas(canvas: AnyCanvas, type: string): Promise<Blob> {
         if (result) resolve(result);
         else reject(new Error("image-preprocess: canvas encode failed"));
       },
-      type,
-      type === "image/jpeg" ? 0.92 : undefined,
+      "image/png",
     );
   });
 }

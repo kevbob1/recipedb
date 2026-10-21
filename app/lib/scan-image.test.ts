@@ -7,8 +7,16 @@
  */
 import { vi } from "vitest";
 
-vi.mock("./scan-reocr.server", () => ({
-  recognizeScanFile: async () => ({
+vi.mock("./scan/recognize-node.server", () => ({
+  FIXTURE_DIR: "tests/fixtures/ocr",
+  fixturePaths: () => [],
+  collectImagePaths: () => [],
+  defaultCachePath: () => "",
+  createOcrSession: async () => ({
+    recognize: async () => ({ text: "", confidence: 0, ms: 0 }),
+    terminate: async () => {},
+  }),
+  ingest: async () => ({
     text: "1 cup flour\n2 eggs\n\n1. Mix.\n2. Bake.",
     confidence: 88.5,
     ms: 7,
@@ -27,14 +35,14 @@ import {
   MAX_SCAN_UPLOAD_BYTES,
   ScanImageError,
   attachImageFilename,
+  handleReOcrRequest,
   reocrRecipe,
   resolveStoredImagePath,
   saveOriginalScanImage,
   validateScanUpload,
-} from "./scan-image.server";
+} from "./scan/index.server";
 import { buildSessionCookie } from "./session.server";
 import { handleSaveDraftRequest } from "./save-draft-http.server";
-import { handleReOcrRequest } from "./re-ocr-http.server";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
@@ -228,13 +236,15 @@ describe("reocrRecipe", () => {
     attachImageFilename(recipeId, rel);
     const before = loadDraft(recipeId);
 
-    let seenPath = "";
-    const result = await reocrRecipe(recipeId, async (filePath) => {
-      seenPath = filePath;
+    let seen: Buffer[] = [];
+    const result = await reocrRecipe(recipeId, async (photo) => {
+      seen = [photo.bytes];
       return { text: "FRESH TEXT", confidence: 91.2, ms: 12 };
     });
 
-    expect(seenPath).toBe(path.join(getImagesDir(), rel));
+    expect(seen[0]?.equals(fs.readFileSync(path.join(getImagesDir(), rel)))).toBe(
+      true,
+    );
     expect(result).toEqual({
       recipeId,
       text: "FRESH TEXT",

@@ -27,18 +27,16 @@ import path from "node:path";
 import { PSM } from "tesseract.js";
 import {
   DEFAULT_OCR_PREPROCESS,
-  type PreprocessOptions,
-  type ThresholdMode,
-} from "../app/lib/image-ops";
-import { scoreOcrText } from "../app/lib/ocr-metrics";
-import {
   autoOrientOnly,
   collectImagePaths,
   createOcrSession,
   fixturePaths,
   preprocessFixture,
   type OcrParamOverrides,
-} from "../app/lib/ocr-node.server";
+  type PreprocessOptions,
+  type ThresholdMode,
+} from "../app/lib/scan/index.server";
+import { scoreOcrText } from "../app/lib/ocr-metrics";
 
 interface Variant {
   name: string;

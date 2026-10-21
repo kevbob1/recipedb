@@ -10,7 +10,7 @@
  * `recipes.image_filename` at it (#28). The artifact is retained indefinitely;
  * only deleting the recipe removes it.
  *
- * Validation lives in saveDraft and scan-image.server; the transport is in
+ * Validation lives in saveDraft and the Scan module; the transport is in
  * ../lib/save-draft-http.server.ts so this route exports only route code.
  */
 import type { Route } from "./+types/api.save-draft";

@@ -1,13 +1,13 @@
 /**
- * HTTP transport for POST /api/re-ocr (#28).
+ * Scan module: HTTP transport for POST /api/re-ocr (#28).
  *
- * Lives outside the route module because React Router strips server code only
- * from route exports; a helper exported from the route would be pulled into the
- * client bundle and drag `auth.server` with it.
+ * Kept inside the Scan module (and behind its `.server` entry) so the route
+ * module stays a thin adapter and this helper — which drags `auth.server`
+ * along — can never be pulled into the client bundle.
  */
-import { requireAuth } from "./auth.server";
-import { reocrRecipe, ScanImageError } from "./scan-image.server";
-import { recognizeScanFile } from "./scan-reocr.server";
+import { requireAuth } from "../auth.server";
+import { ingest } from "./recognize-node.server";
+import { ScanImageError, reocrRecipe } from "./storage.server";
 
 export async function handleReOcrRequest(request: Request): Promise<Response> {
   requireAuth(request, { isApi: true });
@@ -27,7 +27,7 @@ export async function handleReOcrRequest(request: Request): Promise<Response> {
   }
 
   try {
-    const result = await reocrRecipe(id, recognizeScanFile);
+    const result = await reocrRecipe(id, ingest);
     return Response.json(result);
   } catch (err) {
     if (err instanceof ScanImageError) {

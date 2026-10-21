@@ -12,7 +12,7 @@
  *    until a person explicitly publishes it (out of MVP scope; see #11).
  *  - qty: TEXT so fractions, ranges, and words round-trip verbatim. The
  *    numeric view (qty_amount/qty_amount2/qty_unit_normalized/qty_parse_status)
- *    is derived on write by app/lib/quantity-parse.ts; qty itself is never
+ *    is derived on write by app/lib/ingredient-line.ts; qty itself is never
  *    rewritten. See the decision on #15.
  */
 import { eq } from "drizzle-orm";
@@ -32,8 +32,8 @@ import {
 import { getDb } from "../db/client.server";
 import type { RecipeDraft } from "./draft";
 import { normalizeTag, trimOnly, trimOnlyRequired } from "./normalize";
-import { resolveQuantity } from "./quantity-parse";
-import { deleteRecipeImage } from "./scan-image.server";
+import { fromText } from "./ingredient-line";
+import { deleteRecipeImage } from "./scan/index.server";
 
 export interface SaveDraftResult {
   recipeId: number;
@@ -77,22 +77,21 @@ function prepareDraft(draft: RecipeDraft): PreparedDraft {
     .map((ing, i) => {
       const qty = trimOnlyRequired(ing.qty);
       const unit = trimOnly(ing.unit);
-      // Parse-on-write. A row that already carries a trusted parse (importer
-      // output, or a draft re-loaded from the DB) keeps it; anything else —
-      // including a hand-edited qty, which the editor resets to `unparsed` —
-      // is parsed here so the numeric columns are never left stale.
-      // See the decision on #15.
-      const parsed = resolveQuantity({ ...ing, qty, unit });
+      // Parse-on-write, always from the text. Any `qty*` fields carried on the
+      // draft are ignored: the numeric columns are derived here, so a stale or
+      // crafted parse (e.g. amount 999 with status `parsed`) can never survive
+      // a save. See the decision on #15.
+      const parsed = fromText(qty, unit);
       return {
         qty,
         unit,
         item: trimOnlyRequired(ing.item || ing.text),
         note: trimOnly(ing.note),
         position: i + 1,
-        qtyAmount: parsed.amount,
-        qtyAmount2: parsed.amount2,
-        qtyUnitNormalized: parsed.unitNormalized,
-        qtyParseStatus: parsed.status,
+        qtyAmount: parsed.qtyAmount,
+        qtyAmount2: parsed.qtyAmount2,
+        qtyUnitNormalized: parsed.qtyUnitNormalized,
+        qtyParseStatus: parsed.qtyParseStatus,
       };
     })
     .filter((row) => row.item.length > 0);
@@ -288,7 +287,7 @@ export function loadDraft(id: number): RecipeDraft | null {
         note: row.note,
         confidence: row.qty ? "ok" : "warn",
         // Carry the stored numeric view back into the editor so the scaled view
-        // is exact (and so a save without edits does not re-derive anything).
+        // is exact; the write path re-derives it from the text on every save.
         qtyAmount: row.qtyAmount,
         qtyAmount2: row.qtyAmount2,
         qtyUnitNormalized: row.qtyUnitNormalized,

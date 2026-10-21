@@ -14,7 +14,7 @@ import {
   attachImageFilename,
   saveOriginalScanImage,
   validateScanUpload,
-} from "./scan-image.server";
+} from "./scan/index.server";
 
 function scanErrorResponse(err: ScanImageError): Response {
   const status =

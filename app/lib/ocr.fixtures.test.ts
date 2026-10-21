@@ -33,7 +33,7 @@ import {
   fixturePaths,
   preprocessFixture,
   type OcrSession,
-} from "./ocr-node.server";
+} from "./scan/index.server";
 
 const ENABLED = process.env.OCR_FIXTURE_TEST === "1";
 const TIMEOUT_MS = 300_000;

@@ -27,8 +27,12 @@ Two recipes describing the same dish. They coexist; merging is out of the MVP's 
 _Avoid_: Conflict, collision
 
 **Photo**:
-A transient OCR input — read at import, never stored. The recipe is stored, the photo is not.
-_Avoid_: Image attachment, scan file
+A transient OCR input — read at import. Camera captures are discarded after recognition; retained scan images (see Scan) are the exception, kept as Provenance.
+_Avoid_: Image attachment
+
+**Scan**:
+An import path where the Provenance is a retained photograph of a recipe (cookbook page, card) rather than a URL. The Scan module owns the whole path — capture storage, image preprocessing, text recognition — behind one interface; camera-decode and server-decode are adapters behind its seam, not separate modules.
+_Avoid_: OCR pipeline, scanner service
 
 ### Recipe content
 

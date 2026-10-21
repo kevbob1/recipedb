@@ -11,7 +11,14 @@
  * recipes.image_filename at it so OCR can be re-run later. Deleting the recipe
  * deletes the capture. This module still does not write to disk and is not the
  * code that stores anything — it only recognizes. Server-side re-OCR lives in
- * app/lib/scan-reocr.server.ts.
+ * the Scan module (app/lib/scan).
+ *
+ * SEAM: this module stays OUTSIDE app/lib/scan/ on purpose. The Scan module is
+ * Node-only (`sharp` + node:fs), while this one ships to the browser, so the
+ * shared surface is app/lib/image-ops.ts (pixels) plus OCR_WORKER_PARAMS below
+ * (engine params) — not a shared module tree. `ocrTextToDraft`/`guessCategory`
+ * also stay here: turning text into a draft is the deferred Draft-import seam
+ * (docs/adr/0001), not a scan concern.
  *
  * Why tesseract.js runs in the browser: tesseract.js is a WASM build. It
  * doesn't fit the React Router server runtime without a dedicated process and a

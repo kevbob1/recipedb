@@ -1,27 +1,26 @@
 /**
- * Retained scan captures (#28).
+ * Retained scan captures (#28) — Scan module: storage.
  *
  * A scan import used to be transient: the browser OCR'd the photo and threw the
- * bytes away. To iterate on OCR quality we now keep the ORIGINAL bytes
- * server-side, per recipe, for as long as the recipe exists:
+ * bytes away. To iterate on OCR quality we keep the ORIGINAL bytes server-side,
+ * per recipe, for as long as the recipe exists:
  *
  *   DATA_DIR/images/<recipeId>/original.<ext>
  *
  * The recipe row stores the path relative to DATA_DIR/images/ in
  * `recipes.image_filename`. The artifact is deleted only when the recipe is
- * deleted (see deleteRecipe in ./save-draft.server.ts).
+ * deleted (see deleteRecipe in ../../save-draft.server.ts).
  *
  * Deliberately depends on nothing heavier than fs/path + the DB client: the
- * Node OCR engine is injected into `reocrRecipe`, so storage code stays cheap to
- * import (and test) and this module never pulls `sharp`/tesseract into a route
- * that does not need it. The real recognizer lives in ./scan-reocr.server.ts.
+ * recognizer is injected into `reocrRecipe`, so storage code stays cheap to
+ * import (and test) and never pulls `sharp`/tesseract into a route that does
+ * not need it. The real recognizer lives in ./recognize-node.server.ts.
  */
 import { eq } from "drizzle-orm";
 import fs from "node:fs";
 import path from "node:path";
-import { getDb } from "../db/client.server";
-import { getImagesDir } from "../db/client.server";
-import { recipes } from "../db/schema.server";
+import { getDb, getImagesDir } from "../../db/client.server";
+import { recipes } from "../../db/schema.server";
 
 /** Server-side upload ceiling for a scan capture (~15MB). */
 export const MAX_SCAN_UPLOAD_BYTES = 15 * 1024 * 1024;
@@ -162,18 +161,27 @@ export function deleteRecipeImage(recipeId: number): void {
   });
 }
 
-export interface StoredOcrRun {
+/** One OCR pass over a capture: text plus engine confidence/timing. */
+export interface ScanRun {
   text: string;
   confidence: number;
   ms: number;
 }
 
-/** Runs OCR against an on-disk capture. Injected by ./scan-reocr.server.ts. */
-export type StoredScanRecognizer = (filePath: string) => Promise<StoredOcrRun>;
+/** A capture to recognize — raw image bytes (JPEG/PNG/WebP). */
+export interface Photo {
+  bytes: Buffer;
+}
 
 /**
- * Re-run OCR against a recipe's retained capture. The recognizer is injected so
- * this stays testable without loading a tesseract worker.
+ * Runs OCR against a capture. Injected by ./recognize-node.server.ts (`ingest`)
+ * so storage stays testable without loading a tesseract worker, and so this
+ * module never imports `sharp`/tesseract itself.
+ */
+export type StoredScanRecognizer = (photo: Photo) => Promise<ScanRun>;
+
+/**
+ * Re-run OCR against a recipe's retained capture.
  *
  * Returns the fresh text; it NEVER writes to the recipe. The review screen
  * shows the text and only the person's explicit approval applies it (#28).
@@ -181,7 +189,7 @@ export type StoredScanRecognizer = (filePath: string) => Promise<StoredOcrRun>;
 export async function reocrRecipe(
   id: number,
   recognize: StoredScanRecognizer,
-): Promise<StoredOcrRun & { recipeId: number }> {
+): Promise<ScanRun & { recipeId: number }> {
   const row = getDb()
     .select({ id: recipes.id, imageFilename: recipes.imageFilename })
     .from(recipes)
@@ -197,13 +205,28 @@ export async function reocrRecipe(
     );
   }
   const filePath = resolveStoredImagePath(row.imageFilename);
-  if (!filePath || !fs.existsSync(filePath)) {
+  if (!filePath) {
     throw new ScanImageError(
       "image-missing",
       `The retained capture for recipe #${id} is missing on disk.`,
     );
   }
-  const run = await recognize(filePath);
+  // Read the bytes here instead of checking `existsSync` first: the read *is*
+  // the existence check, so a capture deleted between check and use surfaces as
+  // one deterministic error instead of a recognizer crash (TOCTOU closed).
+  let bytes: Buffer;
+  try {
+    bytes = fs.readFileSync(filePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new ScanImageError(
+        "image-missing",
+        `The retained capture for recipe #${id} is missing on disk.`,
+      );
+    }
+    throw err;
+  }
+  const run = await recognize({ bytes });
   return {
     recipeId: id,
     text: run.text,
