@@ -1,11 +1,12 @@
 /**
  * Parse-on-write coverage for the quantity columns (#16).
  *
- * saveDraft derives the numeric columns from the qty text; loadDraft hands the
- * stored parse back to the editor. The editor rebuilds a line through
- * `setQty` (app/lib/ingredient-line.ts) whenever qty or unit changes, and the
- * write path re-parses unconditionally — a carried numeric view can never
- * survive a save. That is the "qty truth by construction" rule from the
+ * saveDraft derives the numeric columns from the qty text. The draft itself
+ * carries text only: loadDraft hands back `qty`/`unit`/`item`, and the editor
+ * rebuilds the numeric view through `fromText`/`setQty`
+ * (app/lib/ingredient-line.ts) whenever it needs one. The write path re-parses
+ * unconditionally, so a stale numeric view cannot survive a save — it has
+ * nowhere to live. That is the "qty truth by construction" rule from the
  * decision on #15.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -15,7 +16,7 @@ import path from "node:path";
 import { ensureDataDirs, getRawSqlite } from "../db/client.server";
 import { runMigrations } from "../db/migrate.server";
 import type { RecipeDraft } from "./draft";
-import { setQty } from "./ingredient-line";
+import { fromText, setQty } from "./ingredient-line";
 import { loadDraft, saveDraft } from "./save-draft.server";
 
 let tmpDir: string;
@@ -103,8 +104,9 @@ describe("saveDraft — parse on write", () => {
   it("re-parses a row whose qty a hand edit replaced", () => {
     const draft = draftWith("2", "cups");
     // The editor rebuilds the line from the new text…
-    draft.ingredients[0] = setQty(draft.ingredients[0]!, "3", "cups");
-    expect(draft.ingredients[0]!.qtyAmount).toBe(3);
+    const line = setQty(draft.ingredients[0]!, "3", "cups");
+    draft.ingredients[0] = line;
+    expect(line.qtyAmount).toBe(3);
     // …and the write path derives the same numbers again.
     const { recipeId } = saveDraft(draft);
     expect(storedRow(recipeId)).toMatchObject({
@@ -116,15 +118,14 @@ describe("saveDraft — parse on write", () => {
 
   it("does not let a stale 999 parse survive a save (regression)", () => {
     const draft = draftWith("2", "cups");
-    // Crafted row: the text says 2, the carried numeric view claims 999 with a
-    // status that the old trust branch would have believed.
-    draft.ingredients[0] = {
-      ...draft.ingredients[0]!,
+    // Crafted row: an untyped caller glues a numeric view onto the draft. The
+    // write path ignores it and derives from the text alone.
+    Object.assign(draft.ingredients[0]!, {
       qtyAmount: 999,
       qtyAmount2: 999,
       qtyUnitNormalized: "bogus",
       qtyParseStatus: "parsed",
-    };
+    });
     const { recipeId } = saveDraft(draft);
     expect(storedRow(recipeId)).toMatchObject({
       qty: "2",
@@ -135,19 +136,13 @@ describe("saveDraft — parse on write", () => {
     });
   });
 
-  it("clears stale numbers when the unit is edited", () => {
+  it("derives the numeric view from the text when the unit is edited", () => {
     const draft = draftWith("1½", "cups");
-    draft.ingredients[0] = {
-      ...draft.ingredients[0]!,
-      qtyAmount: 999,
-      qtyAmount2: 999,
-      qtyUnitNormalized: "cup",
-      qtyParseStatus: "parsed",
-    };
-    // Only the unit changes; the derived view must be rebuilt from (qty, unit).
-    draft.ingredients[0] = setQty(draft.ingredients[0]!, draft.ingredients[0]!.qty, "tbsp");
-    expect(draft.ingredients[0]!.qtyAmount).toBe(1.5);
-    expect(draft.ingredients[0]!.qtyUnitNormalized).toBe("tbsp");
+    // Only the unit changes; the derived view is rebuilt from (qty, unit).
+    const line = setQty(draft.ingredients[0]!, draft.ingredients[0]!.qty, "tbsp");
+    draft.ingredients[0] = line;
+    expect(line.qtyAmount).toBe(1.5);
+    expect(line.qtyUnitNormalized).toBe("tbsp");
     const { recipeId } = saveDraft(draft);
     expect(storedRow(recipeId)).toMatchObject({
       qty_amount: 1.5,
@@ -158,12 +153,17 @@ describe("saveDraft — parse on write", () => {
 });
 
 describe("loadDraft — round-trip", () => {
-  it("carries the stored parse back to the editor", () => {
+  it("returns the text truth; the numeric view is re-derived from it", () => {
     const { recipeId } = saveDraft(draftWith("2-3", "cloves"));
     const loaded = loadDraft(recipeId);
     expect(loaded).not.toBeNull();
-    expect(loaded!.ingredients[0]).toMatchObject({
-      qty: "2-3",
+    const ing = loaded!.ingredients[0]!;
+    // The draft carries text only — nothing numeric rides along.
+    expect(ing).toMatchObject({ qty: "2-3", unit: "cloves", item: "salt" });
+    expect(ing).not.toHaveProperty("qtyAmount");
+    expect(ing).not.toHaveProperty("qtyParseStatus");
+    // The view the editor renders comes from the text, not from the row.
+    expect(fromText(ing.qty, ing.unit)).toMatchObject({
       qtyAmount: 2,
       qtyAmount2: 3,
       qtyUnitNormalized: "clove",

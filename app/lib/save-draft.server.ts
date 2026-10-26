@@ -286,12 +286,6 @@ export function loadDraft(id: number): RecipeDraft | null {
         item: row.item,
         note: row.note,
         confidence: row.qty ? "ok" : "warn",
-        // Carry the stored numeric view back into the editor so the scaled view
-        // is exact; the write path re-derives it from the text on every save.
-        qtyAmount: row.qtyAmount,
-        qtyAmount2: row.qtyAmount2,
-        qtyUnitNormalized: row.qtyUnitNormalized,
-        qtyParseStatus: row.qtyParseStatus,
       })),
     steps: sts
       .sort((a, b) => a.position - b.position)

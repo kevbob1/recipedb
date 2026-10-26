@@ -11,7 +11,7 @@ import {
   type RecipeDraft,
   ingredientConfidence,
 } from "../lib/draft";
-import { display, formatAmount, setQty } from "../lib/ingredient-line";
+import { display, formatAmount, fromText, setQty } from "../lib/ingredient-line";
 import { ocrTextToDraft, guessCategory } from "../lib/ocr";
 
 export function ReviewEditor({
@@ -462,7 +462,7 @@ function IngredientListEditor({
               placeholder="note (optional)"
               style={{ ...inputStyle, marginTop: 6 }}
             />
-            {ing.qtyParseStatus === "unparseable" ? (
+            {fromText(ing.qty, ing.unit).qtyParseStatus === "unparseable" ? (
               <span style={{ fontSize: 11, color: "#a26800" }}>
                 ⚠ could not read a number from “{ing.qty}” — shown as written
               </span>
@@ -489,7 +489,6 @@ function IngredientListEditor({
               item: "",
               note: null,
               confidence: "bad",
-              qtyParseStatus: "unparsed",
             },
           ])
         }

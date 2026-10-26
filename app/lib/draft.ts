@@ -17,7 +17,6 @@
  */
 
 import { CATEGORIES, type Category } from "./categories";
-import type { QtyParseStatus } from "./ingredient-line";
 
 /** Closed MVP category list, re-exported for client code. */
 export { CATEGORIES };
@@ -31,10 +30,11 @@ export type Confidence = "ok" | "warn" | "bad";
  * Matches the persisted four-part shape (qty, unit, item, note) plus the raw
  * line text and the per-line confidence badge.
  *
- * The `qty*` derived fields are the numeric view from app/lib/ingredient-line.ts
- * (decision on #15): optional, because a brand-new manual row has nothing to
- * carry. They are only ever refreshed from the text — editing qty or unit goes
- * through `setQty` in that module, which re-parses both.
+ * The draft carries the TEXT truth only. The numeric view
+ * (qtyAmount/qtyAmount2/qtyUnitNormalized/qtyParseStatus) lives in
+ * app/lib/ingredient-line.ts and is derived from `(qty, unit)` at the point of
+ * use — `fromText` for a read, `setQty` for an edit. Nothing carries it in the
+ * draft, so a stale parse cannot outlive the text it came from (decision on #15).
  */
 export interface DraftIngredient {
   /** Raw line as captured (e.g. "2-3 cloves garlic, minced"). */
@@ -45,14 +45,6 @@ export interface DraftIngredient {
   note: string | null;
   /** Per-line confidence, set by the importer. */
   confidence: Confidence;
-  /** Low end (or single value) of the parsed quantity. */
-  qtyAmount?: number | null;
-  /** High end of a range ("2-3" -> 3); null for a single value. */
-  qtyAmount2?: number | null;
-  /** Canonical unit token (app/lib/ingredient-line.ts); null when unknown/absent. */
-  qtyUnitNormalized?: string | null;
-  /** parsed | range | unparseable | unparsed. */
-  qtyParseStatus?: QtyParseStatus;
 }
 
 /** Step as edited in the review screen. */
