@@ -11,7 +11,7 @@
 import { useState } from "react";
 import { Link, useSearchParams, redirect } from "react-router";
 import type { Route } from "./+types/recipes.$id.review";
-import { ReviewEditor } from "./add";
+import { ReviewEditor } from "./review-editor";
 import {
   CATEGORIES,
   type Category,

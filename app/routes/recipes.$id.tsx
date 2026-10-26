@@ -13,7 +13,7 @@
  */
 import { Link } from "react-router";
 import type { Route } from "./+types/recipes.$id";
-import { ScaledIngredientList } from "./add";
+import { ScaledIngredientList } from "./review-editor";
 import { loadReadRecipe } from "../lib/read.server";
 import { requireAuth } from "../lib/auth.server";
 
