@@ -13,8 +13,9 @@
  * what stops the reason-mixing the architecture review found (a route, a DB
  * helper, an engine wrapper and a tuning harness each knowing part of the scan).
  *
- * The BROWSER half deliberately stays outside: `recognizeText`/`ocrTextToDraft`
- * in app/lib/ocr.ts and the canvas pipeline in app/lib/image-preprocess.ts share
+ * The BROWSER half deliberately stays outside: `recognizeText` and the canvas
+ * pipeline live in app/lib/ocr.ts and app/lib/image-preprocess.ts, and the scan
+ * adapter in app/lib/import.ts turns recognized text into a draft. They share
  * only app/lib/image-ops.ts with this module. `sharp` and node:fs cannot be in
  * the client bundle, so the seam is the shared pixel/param contract, not a
  * shared file.

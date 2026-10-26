@@ -23,13 +23,12 @@ import {
   type Category,
   type DraftIngredient,
   type RecipeDraft,
-  blankDraft,
   countNeedEyes,
   ingredientConfidence,
 } from "../lib/draft";
 import { display, formatAmount, setQty } from "../lib/ingredient-line";
 import { recognizeText } from "../lib/ocr";
-import { importScan, requestUrlImport } from "../lib/import";
+import { createDraft, requestUrlImport } from "../lib/import";
 import { submitDraft } from "../lib/save-transport";
 import { MAX_SCAN_UPLOAD_BYTES, MAX_SCAN_UPLOAD_MB } from "../lib/scan/limits";
 import { ReviewEditor, inputStyle, primaryBtn, ghostBtn } from "./review-editor";
@@ -61,7 +60,9 @@ export default function AddRoute(_args: Route.ComponentProps) {
 function StepperShell() {
   const [step, setStep] = useState<Step>(1);
   const [entry, setEntry] = useState<Entry>(null);
-  const [draft, setDraft] = useState<RecipeDraft>(() => blankDraft());
+  const [draft, setDraft] = useState<RecipeDraft>(() =>
+    createDraft({ kind: "manual" }),
+  );
   const [urlInput, setUrlInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [photoState, setPhotoState] = useState<"idle" | "capturing" | "ocr" | "done" | "error">("idle");
@@ -78,13 +79,11 @@ function StepperShell() {
   function pickEntry(e: Entry) {
     setEntry(e);
     setError(null);
-    if (e === "type") {
-      setDraft({ ...blankDraft(), sourceType: "manual" });
-      setStep(3);
-    } else {
-      setDraft({ ...blankDraft(), sourceType: e === "url" ? "url" : "scan" });
-      setStep(2);
-    }
+    // Clear the previous run. Provenance is stamped by the adapter that
+    // actually produces the next draft (manual here; url/scan once their
+    // import succeeds), never by the route.
+    setDraft(createDraft({ kind: "manual" }));
+    setStep(e === "type" ? 3 : 2);
   }
 
   async function runUrlImport() {
@@ -95,8 +94,8 @@ function StepperShell() {
     }
     setSubmitInFlight(true);
     try {
-      const { draft: imported, imageFilename } = await requestUrlImport(urlInput);
-      setDraft({ ...imported, imageFilename });
+      const { draft: imported } = await requestUrlImport(urlInput);
+      setDraft(imported);
       setStep(3);
     } catch (err) {
       setError(
@@ -122,7 +121,7 @@ function StepperShell() {
       // and uploaded with the draft so the server can retain it (#28).
       setPhotoState("ocr");
       const text = await recognizeText(file);
-      setDraft(importScan(text));
+      setDraft(createDraft({ kind: "scan", text }));
       setPhotoState("done");
       setStep(3);
     } catch (err) {
@@ -149,7 +148,7 @@ function StepperShell() {
   function restart() {
     setStep(1);
     setEntry(null);
-    setDraft(blankDraft());
+    setDraft(createDraft({ kind: "manual" }));
     setUrlInput("");
     setError(null);
     setPhotoState("idle");

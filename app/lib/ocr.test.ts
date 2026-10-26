@@ -3,15 +3,21 @@
  *
  * `recognizeText` itself is hard to unit-test (it would need a real
  * tesseract.js worker + WASM model). The text-to-draft split logic is what
- * the review screen actually depends on, so that's what we cover here.
+ * the review screen actually depends on, so that's what we cover here — via
+ * the scan adapter of the unified Draft factory (docs/adr/0002).
  */
 import { describe, expect, it } from "vitest";
-import { guessCategory, ocrTextToDraft } from "./ocr";
+import { createDraft } from "./import";
+import { guessCategory } from "./ocr";
 import { trimOnly } from "./normalize";
 
-describe("ocrTextToDraft", () => {
+function scan(text: string) {
+  return createDraft({ kind: "scan", text });
+}
+
+describe("scan adapter (OCR text → draft)", () => {
   it("returns a scan-source draft", () => {
-    const draft = ocrTextToDraft("Anything");
+    const draft = scan("Anything");
     expect(draft.sourceType).toBe("scan");
     expect(draft.rawOcrText).toBe("Anything");
     expect(draft.sourceUrl).toBeNull();
@@ -19,7 +25,7 @@ describe("ocrTextToDraft", () => {
 
   it("captures the raw OCR text verbatim", () => {
     const text = "   weirdly\n\nspaced    text   ";
-    const draft = ocrTextToDraft(text);
+    const draft = scan(text);
     expect(draft.rawOcrText).toBe(text);
   });
 
@@ -32,7 +38,7 @@ describe("ocrTextToDraft", () => {
       "Instructions",
       "Brown the beef.",
     ].join("\n");
-    const draft = ocrTextToDraft(text);
+    const draft = scan(text);
     expect(draft.ingredients.length).toBe(2);
     expect(draft.ingredients[0]!.text).toBe("1 lb beef");
     expect(draft.steps.length).toBe(1);
@@ -45,7 +51,7 @@ describe("ocrTextToDraft", () => {
       "1. Heat oven to 350.",
       "2. Mix dry ingredients.",
     ].join("\n");
-    const draft = ocrTextToDraft(text);
+    const draft = scan(text);
     expect(draft.steps.length).toBe(2);
     expect(draft.steps[0]!.position).toBe(1);
     expect(draft.steps[1]!.position).toBe(2);
@@ -53,14 +59,14 @@ describe("ocrTextToDraft", () => {
 
   it("picks the first short non-numeric line as the title", () => {
     const text = "1 2 3\nApple Pie\nIngredients\nx";
-    const draft = ocrTextToDraft(text);
+    const draft = scan(text);
     expect(draft.title).toBe("Apple Pie");
     expect(draft.titleConfidence).toBe("warn");
   });
 
   it("always uses trim-only normalization on step text", () => {
     const text = "  Step  \n  Ingredients  \n   1 cup  flour   ";
-    const draft = ocrTextToDraft(text);
+    const draft = scan(text);
     for (const s of draft.steps) {
       expect(s.text).toBe(trimOnly(s.text));
     }

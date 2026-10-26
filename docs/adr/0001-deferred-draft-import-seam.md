@@ -1,7 +1,11 @@
 # ADR-0001: Defer the Draft-import seam
 
 Date: 2026-10-21
-Status: Accepted (deferred)
+Status: Superseded by [ADR-0002](./0002-unified-draft-factory.md)
+
+> Editor's note: the "ADR-0002 direction" mentioned below was realized as
+> the Scan module (`app/lib/scan`) without its own ADR. ADR-0002 is the
+> unified Draft factory that replaces this deferral.
 
 ## Context
 

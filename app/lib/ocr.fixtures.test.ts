@@ -26,7 +26,7 @@
 import { basename } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { DEFAULT_OCR_PREPROCESS } from "./image-ops";
-import { ocrTextToDraft } from "./ocr";
+import { createDraft } from "./import";
 import { scoreOcrText, type OcrQuality } from "./ocr-metrics";
 import {
   createOcrSession,
@@ -107,7 +107,7 @@ suite("OCR fixtures (opt-in: OCR_FIXTURE_TEST=1)", () => {
 
         // The import flow only needs ingredient rows and steps to be present.
         expect(pre.ingredientLines).toBeGreaterThanOrEqual(1);
-        const draft = ocrTextToDraft(preRun.text);
+        const draft = createDraft({ kind: "scan", text: preRun.text });
         expect(
           draft.ingredients.length + draft.steps.length,
         ).toBeGreaterThanOrEqual(1);

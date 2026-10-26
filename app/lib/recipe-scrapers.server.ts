@@ -27,8 +27,8 @@ import {
   type Confidence,
   type DraftIngredient,
   type DraftStep,
-  type RecipeDraft,
 } from "./draft";
+import type { ScrapedRecipeData } from "./import";
 import { trimOnly, trimOnlyRequired } from "./normalize";
 import {
   extractJsonLd,
@@ -43,32 +43,24 @@ import {
 const USER_AGENT = "recipedb/0.1 (+https://github.com/kevbob1/recipedb)";
 const FETCH_TIMEOUT_MS = 12_000;
 
-/** What we accept as a category from the page. */
-const CATEGORIES_SET = new Set([
-  "one-dish",
-  "soup",
-  "salad",
-  "bread",
-  "dessert",
-  "cookies",
-  "cake",
-  "pie",
-  "other",
-] as const);
-
-export interface ImportUrlResult {
-  draft: RecipeDraft;
+export interface ScrapedUrlResult {
+  /** Canonical URL the page was fetched from (becomes the draft's sourceUrl). */
+  url: string;
+  /** Page data, ready for the url adapter in ./import.ts. */
+  data: ScrapedRecipeData;
   /** The image filename under DATA_DIR/images/ if we downloaded one. */
   imageFilename: string | null;
 }
 
 /**
- * Fetch a URL's HTML and turn it into a RecipeDraft.
+ * Fetch a URL's HTML, parse it, and download its image if there is one.
  *
- * Tries `recipe-scrapers` first; if that throws or returns nothing useful
- * (no title, no ingredients), falls back to JSON-LD extraction.
+ * Returns scraper data only: provenance stamping and draft-level confidence
+ * belong to the url adapter (`createDraft` in ./import.ts, ADR-0002). Tries
+ * `recipe-scrapers` first; if that throws or returns nothing useful (no
+ * title, no ingredients), falls back to JSON-LD extraction.
  */
-export async function importFromUrl(rawUrl: string): Promise<ImportUrlResult> {
+export async function importFromUrl(rawUrl: string): Promise<ScrapedUrlResult> {
   const url = normalizeUrl(rawUrl);
   if (!url) {
     throw new ImportError("invalid-url", "That doesn't look like an http(s) URL.");
@@ -77,33 +69,33 @@ export async function importFromUrl(rawUrl: string): Promise<ImportUrlResult> {
   const html = await fetchHtml(url);
 
   // Primary: recipe-scrapers (with a generic fallback inside the library).
-  let primaryDraft: RecipeDraft | null = null;
+  let primaryData: ScrapedRecipeData | null = null;
   try {
     const parsed = await scrapeRecipe(html, url, { parseIngredients: true });
-    primaryDraft = draftFromScraper(parsed, url);
+    primaryData = dataFromScraper(parsed);
   } catch (err) {
     // recipe-scrapers throws when the URL is unknown to it; that's the
     // expected signal to fall back.
-    primaryDraft = null;
+    primaryData = null;
     if (process.env.NODE_ENV !== "production") {
       console.warn("[import-url] recipe-scrapers failed:", (err as Error).message);
     }
   }
 
   // Fallback: JSON-LD.
-  let fallbackDraft: RecipeDraft | null = null;
+  let fallbackData: ScrapedRecipeData | null = null;
   let fallbackImageUrl: string | null = null;
-  if (!primaryDraft || !primaryDraft.title.trim()) {
+  if (!primaryData || !primaryData.title.trim()) {
     const { recipe, blocks } = extractJsonLd(html);
     if (recipe) {
-      fallbackDraft = draftFromJsonLd(recipe, url);
-      fallbackDraft.raw = JSON.stringify(blocks, null, 2);
+      fallbackData = dataFromJsonLd(recipe);
+      fallbackData.raw = JSON.stringify(blocks, null, 2);
       fallbackImageUrl = pickImage(recipe["image"]);
     }
   }
 
-  const draft = primaryDraft && primaryDraft.title.trim() ? primaryDraft : fallbackDraft;
-  if (!draft) {
+  const data = primaryData && primaryData.title.trim() ? primaryData : fallbackData;
+  if (!data) {
     throw new ImportError(
       "no-recipe-found",
       "Couldn't find a recipe on that page. Try a different URL or pick 'Type it in'.",
@@ -112,30 +104,26 @@ export async function importFromUrl(rawUrl: string): Promise<ImportUrlResult> {
 
   // Image download (sharp → WebP or AVIF, saved under images/).
   let imageFilename: string | null = null;
-  if (draft.sourceUrl) {
-    // recipe-scrapers keeps its image inside the raw JSON; the JSON-LD
-    // fallback hands it over directly because its raw is the whole block
-    // list, not a single recipe object (#13 smoke test).
-    const imageUrl =
-      draft === primaryDraft
-        ? extractImageFromDraft(draft, html)
-        : fallbackImageUrl;
-    if (imageUrl) {
-      try {
-        imageFilename = await downloadRecipeImage(imageUrl);
-        // Stash the local-served path in raw as a hint for the UI.
-        draft.raw = (draft.raw ?? "") +
-          `\n\n# local image: /images/${imageFilename}`;
-      } catch (err) {
-        // Image download is best-effort; never fail the import.
-        if (process.env.NODE_ENV !== "production") {
-          console.warn("[import-url] image download failed:", (err as Error).message);
-        }
+  // recipe-scrapers keeps its image inside the raw JSON; the JSON-LD
+  // fallback hands it over directly because its raw is the whole block
+  // list, not a single recipe object (#13 smoke test).
+  const imageUrl =
+    data === primaryData ? extractImageFromData(data) : fallbackImageUrl;
+  if (imageUrl) {
+    try {
+      imageFilename = await downloadRecipeImage(imageUrl);
+      // Stash the local-served path in raw as a hint for the UI.
+      data.raw = (data.raw ?? "") +
+        `\n\n# local image: /images/${imageFilename}`;
+    } catch (err) {
+      // Image download is best-effort; never fail the import.
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[import-url] image download failed:", (err as Error).message);
       }
     }
   }
 
-  return { draft, imageFilename };
+  return { url, data, imageFilename };
 }
 
 class ImportError extends Error {
@@ -195,68 +183,35 @@ async function fetchHtml(url: string): Promise<string> {
   }
 }
 
-function draftFromScraper(
+function dataFromScraper(
   parsed: Awaited<ReturnType<typeof scrapeRecipe>>,
-  url: string,
-): RecipeDraft {
-  const title = trimOnlyRequired(parsed.title);
-  const ingredients: DraftIngredient[] = flattenIngredients(parsed.ingredients);
-  const steps: DraftStep[] = flattenInstructions(parsed.instructions);
+): ScrapedRecipeData {
   return {
-    title,
-    titleConfidence: title ? "ok" : "bad",
-    category: categoryFromKeywords([
-      ...(parsed.category ?? []),
-      ...(parsed.cuisine ?? []),
-    ]),
-    categoryConfidence:
-      (parsed.category?.length ?? 0) + (parsed.cuisine?.length ?? 0) > 0
-        ? "ok"
-        : "warn",
-    yield: trimOnly(parsed.yields ?? null),
-    yieldConfidence: parsed.yields ? "ok" : "bad",
-    tags: uniqueLower((parsed.keywords ?? []).slice(0, 8)),
-    sourceType: "url",
-    sourceUrl: url,
-    rawOcrText: null,
-    favorite: false,
-    ingredients,
-    steps,
+    title: trimOnlyRequired(parsed.title),
+    categoryKeywords: [...(parsed.category ?? []), ...(parsed.cuisine ?? [])],
+    yields: trimOnly(parsed.yields ?? null),
+    tags: parsed.keywords ?? [],
+    ingredients: flattenIngredients(parsed.ingredients),
+    steps: flattenInstructions(parsed.instructions),
     raw: JSON.stringify(parsed, null, 2),
   };
 }
 
-function draftFromJsonLd(
-  recipe: Record<string, unknown>,
-  url: string,
-): RecipeDraft {
-  const title = trimOnlyRequired(pickString(recipe["name"]));
-  const ingredients: DraftIngredient[] = pickStringArray(
-    recipe["recipeIngredient"],
-  ).map((line) => ingredientFromRawLine(line, "ok"));
-  const steps: DraftStep[] = pickInstructionTexts(
-    recipe["recipeInstructions"],
-  ).map((text, i) => ({ position: i + 1, text: trimOnlyRequired(text) }));
-  const yields = pickString(recipe["recipeYield"]);
-  const categoryKeywords = [
-    ...pickStringArray(recipe["recipeCategory"]),
-    ...pickStringArray(recipe["recipeCuisine"]),
-  ];
-  const tags = pickKeywords(recipe["keywords"]);
+function dataFromJsonLd(recipe: Record<string, unknown>): ScrapedRecipeData {
   return {
-    title,
-    titleConfidence: title ? "ok" : "bad",
-    category: categoryFromKeywords(categoryKeywords),
-    categoryConfidence: categoryKeywords.length > 0 ? "ok" : "warn",
-    yield: trimOnly(yields),
-    yieldConfidence: yields ? "ok" : "bad",
-    tags: uniqueLower(tags.slice(0, 8)),
-    sourceType: "url",
-    sourceUrl: url,
-    rawOcrText: null,
-    favorite: false,
-    ingredients,
-    steps,
+    title: trimOnlyRequired(pickString(recipe["name"])),
+    categoryKeywords: [
+      ...pickStringArray(recipe["recipeCategory"]),
+      ...pickStringArray(recipe["recipeCuisine"]),
+    ],
+    yields: trimOnly(pickString(recipe["recipeYield"])),
+    tags: pickKeywords(recipe["keywords"]),
+    ingredients: pickStringArray(recipe["recipeIngredient"]).map((line) =>
+      ingredientFromRawLine(line, "ok"),
+    ),
+    steps: pickInstructionTexts(recipe["recipeInstructions"]).map(
+      (text, i) => ({ position: i + 1, text: trimOnlyRequired(text) }),
+    ),
   };
 }
 
@@ -265,12 +220,12 @@ function draftFromJsonLd(
  * result or from the JSON-LD we already extracted. The HTML is only used as a
  * last-resort hint.
  */
-function extractImageFromDraft(draft: RecipeDraft, _html: string): string | null {
-  // draft.raw holds the JSON of the scraper result. Cheap to fish the image
+function extractImageFromData(data: ScrapedRecipeData): string | null {
+  // data.raw holds the JSON of the scraper result. Cheap to fish the image
   // out of there for a single page.
-  if (!draft.raw) return null;
+  if (!data.raw) return null;
   try {
-    const parsed = JSON.parse(draft.raw) as Record<string, unknown>;
+    const parsed = JSON.parse(data.raw) as Record<string, unknown>;
     return pickImage(parsed["image"]);
   } catch {
     return null;
@@ -348,35 +303,6 @@ function flattenInstructions(
         text: trimOnlyRequired((item as InstructionItem).value),
       });
     }
-  }
-  return out;
-}
-
-function categoryFromKeywords(words: string[]): RecipeDraft["category"] {
-  const lower = words.map((w) => w.toLowerCase()).join(" ");
-  // Best-effort mapping from food-blog category strings to the MVP fixed list.
-  if (/\b(soup|stew|chili|broth)\b/.test(lower)) return "soup";
-  if (/\b(salad|slaw)\b/.test(lower)) return "salad";
-  if (/\b(bread|loaf|focaccia|baguette|bun|roll|sourdough)\b/.test(lower)) return "bread";
-  if (/\b(cookie|biscuit)\b/.test(lower)) return "cookies";
-  if (/\b(cake|torte|gateau)\b/.test(lower)) return "cake";
-  if (/\b(pie|tart|crumble)\b/.test(lower)) return "pie";
-  if (/\b(dessert|pudding|custard|mousse)\b/.test(lower)) return "dessert";
-  if (/\b(one[- ]pot|one[- ]dish|skillet|casserole|main)\b/.test(lower)) return "one-dish";
-  if (CATEGORIES_SET.has(lower as RecipeDraft["category"])) {
-    return lower as RecipeDraft["category"];
-  }
-  return "other";
-}
-
-function uniqueLower(words: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const w of words) {
-    const t = w.trim().toLowerCase();
-    if (!t || seen.has(t)) continue;
-    seen.add(t);
-    out.push(t);
   }
   return out;
 }

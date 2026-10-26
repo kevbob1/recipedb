@@ -16,9 +16,10 @@
  * SEAM: this module stays OUTSIDE app/lib/scan/ on purpose. The Scan module is
  * Node-only (`sharp` + node:fs), while this one ships to the browser, so the
  * shared surface is app/lib/image-ops.ts (pixels) plus OCR_WORKER_PARAMS below
- * (engine params) — not a shared module tree. `ocrTextToDraft`/`guessCategory`
- * also stay here: turning text into a draft is the deferred Draft-import seam
- * (docs/adr/0001), not a scan concern.
+ * (engine params) — not a shared module tree. This module only recognizes
+ * text; turning text into a RecipeDraft belongs to the unified Draft factory
+ * in app/lib/import.ts (docs/adr/0002). `guessCategory` stays here because it
+ * is the OCR-specific category heuristic the scan adapter calls back into.
  *
  * Why tesseract.js runs in the browser: tesseract.js is a WASM build. It
  * doesn't fit the React Router server runtime without a dedicated process and a
@@ -37,23 +38,12 @@
  */
 
 import { createWorker, PSM, type Worker } from "tesseract.js";
-import type {
-  DraftIngredient,
-  DraftStep,
-  RecipeDraft,
-} from "./draft";
-import {
-  CATEGORIES,
-  type Category,
-  type Confidence,
-  blankDraft,
-} from "./draft";
+import { CATEGORIES, type Category } from "./draft";
 import {
   DEFAULT_OCR_PREPROCESS,
   type PreprocessOptions,
 } from "./image-ops";
 import { tryPreprocessImageBlob } from "./image-preprocess";
-import { trimOnlyRequired } from "./normalize";
 
 /**
  * Tesseract engine parameters shared by the browser worker and the Node
@@ -135,88 +125,6 @@ export async function recognizeText(
   } finally {
     await worker.terminate();
   }
-}
-
-/**
- * Turn raw OCR text into a RecipeDraft by splitting it into ingredients and
- * steps heuristically. The parser is intentionally simple — it exists to
- * land the imported text in the review screen with sensible defaults. The
- * real review work happens in the UI.
- */
-export function ocrTextToDraft(rawText: string): RecipeDraft {
-  const lines = rawText
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-
-  const ingredients: DraftIngredient[] = [];
-  const steps: DraftStep[] = [];
-  let mode: "ingredients" | "steps" | "unknown" = "unknown";
-
-  for (const line of lines) {
-    const lower = line.toLowerCase();
-    const looksStep = /^\d+[\.\)]\s+/.test(line) || /^\bstep\b/i.test(line);
-    const looksIngredient =
-      mode === "ingredients" ||
-      (!looksStep && /[a-zA-Z]/.test(line) && /[0-9¼½¾⅓⅔]/.test(line));
-
-    if (/^\b(ingredients|you('| wi)ll need)\b/i.test(line)) {
-      mode = "ingredients";
-      continue;
-    }
-    if (/^\b(instructions|directions|method|steps?)\b/i.test(line)) {
-      mode = "steps";
-      continue;
-    }
-    if (line.length > 140) continue; // body paragraphs are noise
-
-    if (mode === "ingredients" || (mode === "unknown" && looksIngredient)) {
-      mode = "ingredients";
-      ingredients.push(ingredientFromRawLine(line, "warn"));
-    } else if (mode === "steps" || (mode === "unknown" && looksStep)) {
-      mode = "steps";
-      const text = line.replace(/^\d+[\.\)]\s+/, "").replace(/^step\s*\d*:?\s*/i, "");
-      steps.push({ position: steps.length + 1, text: trimOnlyRequired(text) });
-    }
-  }
-
-  // Best-effort title: first non-numeric, short line.
-  let title = "";
-  let titleConfidence: Confidence = "bad";
-  for (const line of lines) {
-    if (line.length < 4 || line.length > 80) continue;
-    if (/^\d/.test(line)) continue;
-    if (/ingredient|instruction|method|direction/i.test(line)) continue;
-    title = line;
-    titleConfidence = "warn";
-    break;
-  }
-
-  const draft: RecipeDraft = {
-    ...blankDraft(),
-    title,
-    titleConfidence,
-    sourceType: "scan",
-    sourceUrl: null,
-    rawOcrText: rawText,
-    ingredients,
-    steps,
-  };
-  return draft;
-}
-
-function ingredientFromRawLine(
-  text: string,
-  confidence: Confidence,
-): DraftIngredient {
-  return {
-    text,
-    qty: "",
-    unit: null,
-    item: text,
-    note: null,
-    confidence,
-  };
 }
 
 /** Best-effort category detection from the title or raw text. */
