@@ -8,7 +8,8 @@
  * sees the raw HTML.
  */
 import type { Route } from "./+types/api.import-url";
-import { importFromUrl, ImportError } from "../lib/recipe-scrapers.server";
+import { ImportError } from "../lib/recipe-scrapers.server";
+import { importUrl } from "../lib/import.server";
 import { requireAuth } from "../lib/auth.server";
 
 export async function action({ request }: Route.ActionArgs) {
@@ -28,7 +29,7 @@ export async function action({ request }: Route.ActionArgs) {
     return Response.json({ error: "missing-url" }, { status: 400 });
   }
   try {
-    const result = await importFromUrl(url);
+    const result = await importUrl(url);
     return Response.json({
       draft: result.draft,
       imageFilename: result.imageFilename,

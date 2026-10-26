@@ -28,7 +28,10 @@ import {
   ingredientConfidence,
 } from "../lib/draft";
 import { display, formatAmount, setQty } from "../lib/ingredient-line";
-import { recognizeText, ocrTextToDraft, guessCategory } from "../lib/ocr";
+import { recognizeText } from "../lib/ocr";
+import { importScan, requestUrlImport } from "../lib/import";
+import { submitDraft } from "../lib/save-transport";
+import { MAX_SCAN_UPLOAD_BYTES, MAX_SCAN_UPLOAD_MB } from "../lib/scan/limits";
 import { ReviewEditor, inputStyle, primaryBtn, ghostBtn } from "./review-editor";
 import { requireAuth } from "../lib/auth.server";
 
@@ -46,9 +49,6 @@ export async function loader({ request }: Route.LoaderArgs) {
 
 type Step = 1 | 2 | 3 | 4;
 type Entry = "url" | "photo" | "type" | null;
-
-/** Mirror of the server's upload ceiling; the server is authoritative. */
-const MAX_SCAN_UPLOAD_BYTES = 15 * 1024 * 1024;
 
 export default function AddRoute(_args: Route.ComponentProps) {
   return (
@@ -95,21 +95,13 @@ function StepperShell() {
     }
     setSubmitInFlight(true);
     try {
-      const res = await fetch("/api/import-url", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url: urlInput }),
-      });
-      const json = (await res.json()) as
-        | { draft: RecipeDraft; imageFilename: string | null }
-        | { error: string; message?: string };
-      if (!res.ok || "error" in json) {
-        const msg = "message" in json && json.message ? json.message : "Couldn't import that URL.";
-        setError(msg);
-        return;
-      }
-      setDraft({ ...json.draft, sourceType: "url", imageFilename: json.imageFilename });
+      const { draft: imported, imageFilename } = await requestUrlImport(urlInput);
+      setDraft({ ...imported, imageFilename });
       setStep(3);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Couldn't import that URL.",
+      );
     } finally {
       setSubmitInFlight(false);
     }
@@ -119,7 +111,7 @@ function StepperShell() {
     setError(null);
     if (file.size > MAX_SCAN_UPLOAD_BYTES) {
       setError(
-        `That image is larger than ${MAX_SCAN_UPLOAD_BYTES / (1024 * 1024)}MB. Retake it or pick a smaller file.`,
+        `That image is larger than ${MAX_SCAN_UPLOAD_MB}MB. Retake it or pick a smaller file.`,
       );
       return;
     }
@@ -130,10 +122,7 @@ function StepperShell() {
       // and uploaded with the draft so the server can retain it (#28).
       setPhotoState("ocr");
       const text = await recognizeText(file);
-      const ocrDraft = ocrTextToDraft(text);
-      ocrDraft.sourceType = "scan";
-      ocrDraft.category = guessCategory(ocrDraft.title || text);
-      setDraft(ocrDraft);
+      setDraft(importScan(text));
       setPhotoState("done");
       setStep(3);
     } catch (err) {
@@ -146,32 +135,12 @@ function StepperShell() {
     setError(null);
     setSubmitInFlight(true);
     try {
-      // Multipart when a scan is attached: the draft JSON plus the untouched
-      // original bytes. URL/manual drafts keep the JSON transport.
-      let body: BodyInit;
-      if (photoFile) {
-        const form = new FormData();
-        form.set("draft", JSON.stringify(draft));
-        form.set("image", photoFile, photoFile.name || "capture.png");
-        body = form;
-      } else {
-        body = JSON.stringify(draft);
-      }
-      const res = await fetch("/api/save-draft", {
-        method: "POST",
-        ...(photoFile ? {} : { headers: { "content-type": "application/json" } }),
-        body,
-      });
-      const json = (await res.json()) as
-        | { recipeId: number }
-        | { error: string; message?: string };
-      if (!res.ok || "error" in json) {
-        const msg = "message" in json && json.message ? json.message : "Couldn't save.";
-        setError(msg);
-        return;
-      }
-      setSavedRecipeId(json.recipeId);
+      // The save transport decides JSON vs multipart (a retained scan rides
+      // along as the untouched bytes) and maps a failed response to a message.
+      setSavedRecipeId(await submitDraft(draft, photoFile));
       setStep(4);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save.");
     } finally {
       setSubmitInFlight(false);
     }

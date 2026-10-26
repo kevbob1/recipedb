@@ -12,7 +12,7 @@ import {
   ingredientConfidence,
 } from "../lib/draft";
 import { display, formatAmount, fromText, setQty } from "../lib/ingredient-line";
-import { ocrTextToDraft, guessCategory } from "../lib/ocr";
+import { importScan } from "../lib/import";
 
 export function ReviewEditor({
   draft,
@@ -51,11 +51,13 @@ export function ReviewEditor({
    */
   function applyOcr() {
     if (ocrPreview === null) return;
-    const next = ocrTextToDraft(ocrPreview);
-    next.sourceType = "scan";
-    next.category = guessCategory(next.title || ocrPreview);
-    next.imageFilename = draft.imageFilename ?? null;
-    setDraft(next);
+    // The import seam owns the parse stamping (sourceType/category guess);
+    // the retained capture is the recipe's, not the fresh text's.
+    setDraft(
+      importScan(ocrPreview, {
+        imageFilename: draft.imageFilename ?? null,
+      }),
+    );
     setOcrPreview(null);
   }
 

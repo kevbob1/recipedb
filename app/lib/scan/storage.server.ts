@@ -9,7 +9,7 @@
  *
  * The recipe row stores the path relative to DATA_DIR/images/ in
  * `recipes.image_filename`. The artifact is deleted only when the recipe is
- * deleted (see deleteRecipe in ../../save-draft.server.ts).
+ * deleted (see deleteRecipe in ../../draft-store.server.ts).
  *
  * Deliberately depends on nothing heavier than fs/path + the DB client: the
  * recognizer is injected into `reocrRecipe`, so storage code stays cheap to
@@ -22,8 +22,16 @@ import path from "node:path";
 import { getDb, getImagesDir } from "../../db/client.server";
 import { recipes } from "../../db/schema.server";
 
-/** Server-side upload ceiling for a scan capture (~15MB). */
-export const MAX_SCAN_UPLOAD_BYTES = 15 * 1024 * 1024;
+/**
+ * Upload ceiling for a scan capture (~15MB). Defined in ./limits so the Add
+ * flow's browser-side pre-check can use the same number; re-exported here
+ * because this module is where the ceiling is enforced.
+ */
+export { MAX_SCAN_UPLOAD_BYTES, MAX_SCAN_UPLOAD_MB } from "./limits";
+import {
+  MAX_SCAN_UPLOAD_BYTES,
+  MAX_SCAN_UPLOAD_MB,
+} from "./limits";
 
 /** Extension actually written, derived from the bytes, not the client header. */
 export type ScanImageExt = "jpg" | "png" | "webp";
@@ -94,7 +102,7 @@ export function validateScanUpload(bytes: Buffer): {
   if (bytes.byteLength > MAX_SCAN_UPLOAD_BYTES) {
     throw new ScanImageError(
       "image-too-large",
-      `Images must be ${MAX_SCAN_UPLOAD_BYTES / (1024 * 1024)}MB or smaller.`,
+      `Images must be ${MAX_SCAN_UPLOAD_MB}MB or smaller.`,
     );
   }
   const ext = sniffImageExt(bytes);

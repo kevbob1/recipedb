@@ -1,10 +1,11 @@
 /**
- * Persist a reviewed draft to the relational tables.
+ * Draft persistence seam — the one place that converts between the review
+ * screen's editable RecipeDraft and the relational rows.
  *
- * This is the bridge between the editor's view of a recipe (RecipeDraft)
- * and the storage contract (Drizzle schema, FTS5 triggers). It applies the
- * trim-only normalizer, drops empty fields, and writes a single recipe row
- * plus its ingredients, steps, and tags inside one transaction.
+ * Everything below the review UI goes through here: `prepareDraft` (validate
+ * + normalize + derive the numeric view), `saveDraft`, `updateDraft`,
+ * `loadDraft`, `deleteRecipe`. Routes and transports hand over a draft; they
+ * never map fields onto columns themselves.
  *
  * Domain source of truth: ../GLOSSARY.md
  *  - Recipe: a single stored dish, one import or manual entry. No merge.
@@ -14,12 +15,26 @@
  *    numeric view (qty_amount/qty_amount2/qty_unit_normalized/qty_parse_status)
  *    is derived on write by app/lib/ingredient-line.ts; qty itself is never
  *    rewritten. See the decision on #15.
+ *
+ * Two halves, split by what storage can actually hold (#2):
+ *  - PersistedDraft: the columns we own, validated and normalized. This is the
+ *    only thing that touches SQL.
+ *  - Transient review state: per-field/per-line confidence and the `raw`
+ *    drawer blob. Never written, always re-derived from the persisted text via
+ *    the shared helpers in app/lib/draft.ts, so the importer and the read path
+ *    cannot disagree about what needs eyes.
+ *
+ * Note on rawOcrText: it looks like editing state, but it is provenance — a
+ * real column (recipes.raw_ocr_text) that re-OCR and the review drawer depend
+ * on. It therefore lives in the persisted half, not the transient one.
+ *
+ * Scope (#2): this slice is persistence only. The URL / OCR / manual
+ * constructors stay where they are (ADR-0001 deferred), and imageFilename
+ * lifecycle stays with the Scan module for now.
  */
 import { eq } from "drizzle-orm";
-import { getRawSqlite } from "../db/client.server";
+import { getDb, getRawSqlite } from "../db/client.server";
 import {
-  CATEGORIES,
-  type Category,
   ingredientLines,
   recipes,
   steps,
@@ -27,10 +42,16 @@ import {
   type NewIngredientLine,
   type NewRecipe,
   type NewStep,
-  type NewTag,
 } from "../db/schema.server";
-import { getDb } from "../db/client.server";
-import type { RecipeDraft } from "./draft";
+import { CATEGORIES, type Category } from "./categories";
+import {
+  type Confidence,
+  type DraftIngredient,
+  type RecipeDraft,
+  ingredientConfidence,
+  optionalFieldConfidence,
+  requiredFieldConfidence,
+} from "./draft";
 import { normalizeTag, trimOnly, trimOnlyRequired } from "./normalize";
 import { fromText } from "./ingredient-line";
 import { deleteRecipeImage } from "./scan/index.server";
@@ -40,8 +61,12 @@ export interface SaveDraftResult {
   isDraft: true;
 }
 
-/** Cleaned, DB-ready pieces shared by saveDraft and updateDraft. */
-interface PreparedDraft {
+/**
+ * The persisted half of a draft: DB-ready recipe columns plus child rows.
+ * Deliberately carries no confidence and no `raw` — preparing a draft is
+ * exactly the act of dropping transient review state.
+ */
+export interface PersistedDraft {
   fields: {
     title: string;
     category: Category;
@@ -54,14 +79,16 @@ interface PreparedDraft {
   };
   ingredients: Omit<NewIngredientLine, "recipeId">[];
   steps: Omit<NewStep, "recipeId">[];
-  tags: Omit<NewTag, "recipeId">[];
+  tags: string[];
 }
 
 /**
  * Validate + normalize a draft exactly once, for both insert and update.
- * Throws SaveError on a missing title or unknown category.
+ * Ignores every incoming confidence badge: those are derived, not stored.
+ * Throws SaveError on a missing title, an unknown category, or a malformed
+ * payload.
  */
-function prepareDraft(draft: RecipeDraft): PreparedDraft {
+export function prepareDraft(draft: RecipeDraft): PersistedDraft {
   const title = trimOnlyRequired(draft.title);
   if (!title) {
     throw new SaveError("title-required", "A title is required to save a draft.");
@@ -73,8 +100,11 @@ function prepareDraft(draft: RecipeDraft): PreparedDraft {
     );
   }
 
+  // Positions are assigned after the empty-line filter, so a draft that loses
+  // a middle line on its first save does not leave a positional gap that the
+  // next save would close (prepareDraft must be a fixed point — #2).
   const ingredients: Omit<NewIngredientLine, "recipeId">[] = draft.ingredients
-    .map((ing, i) => {
+    .map((ing) => {
       const qty = trimOnlyRequired(ing.qty);
       const unit = trimOnly(ing.unit);
       // Parse-on-write, always from the text. Any `qty*` fields carried on the
@@ -87,30 +117,32 @@ function prepareDraft(draft: RecipeDraft): PreparedDraft {
         unit,
         item: trimOnlyRequired(ing.item || ing.text),
         note: trimOnly(ing.note),
-        position: i + 1,
+        position: 0,
         qtyAmount: parsed.qtyAmount,
         qtyAmount2: parsed.qtyAmount2,
         qtyUnitNormalized: parsed.qtyUnitNormalized,
         qtyParseStatus: parsed.qtyParseStatus,
       };
     })
-    .filter((row) => row.item.length > 0);
+    .filter((row) => row.item.length > 0)
+    .map((row, i) => ({ ...row, position: i + 1 }));
 
   const steps: Omit<NewStep, "recipeId">[] = draft.steps
-    .map((s, i) => ({
-      position: i + 1,
+    .map((s) => ({
+      position: 0,
       text: trimOnlyRequired(s.text),
     }))
-    .filter((row) => row.text.length > 0);
+    .filter((row) => row.text.length > 0)
+    .map((row, i) => ({ ...row, position: i + 1 }));
 
-  const tags: Omit<NewTag, "recipeId">[] = (() => {
+  const tagLabels = (() => {
     const seen = new Set<string>();
-    const out: Omit<NewTag, "recipeId">[] = [];
+    const out: string[] = [];
     for (const t of draft.tags) {
       const label = normalizeTag(t);
       if (!label || seen.has(label)) continue;
       seen.add(label);
-      out.push({ label });
+      out.push(label);
     }
     return out;
   })();
@@ -128,12 +160,77 @@ function prepareDraft(draft: RecipeDraft): PreparedDraft {
     },
     ingredients,
     steps,
-    tags,
+    tags: tagLabels,
   };
 }
 
+/** Rebuild one editable ingredient line from its stored parts. */
+function draftIngredientFromRow(
+  row: Omit<NewIngredientLine, "recipeId">,
+): DraftIngredient {
+  const base: DraftIngredient = {
+    text: [row.qty, row.unit, row.item, row.note]
+      .filter(Boolean)
+      .join(" ")
+      .trim(),
+    qty: row.qty,
+    unit: row.unit ?? null,
+    item: row.item,
+    note: row.note ?? null,
+    confidence: "ok",
+  };
+  return { ...base, confidence: ingredientConfidence(base) };
+}
+
+/**
+ * The read half of the seam: turn persisted rows back into an editable draft,
+ * deriving every confidence badge from the persisted text with the same
+ * helpers the importer uses. This is the only place a loaded badge is decided.
+ */
+export function composeDraft(
+  persisted: PersistedDraft,
+  raw?: string,
+): RecipeDraft {
+  const draft: RecipeDraft = {
+    title: persisted.fields.title,
+    titleConfidence: requiredFieldConfidence(persisted.fields.title),
+    category: persisted.fields.category,
+    categoryConfidence: requiredFieldConfidence(persisted.fields.category),
+    yield: persisted.fields.yield,
+    yieldConfidence: optionalFieldConfidence(persisted.fields.yield),
+    tags: [...persisted.tags],
+    sourceType: persisted.fields.sourceType,
+    sourceUrl: persisted.fields.sourceUrl,
+    rawOcrText: persisted.fields.rawOcrText,
+    imageFilename: persisted.fields.imageFilename,
+    favorite: persisted.fields.favorite,
+    ingredients: [...persisted.ingredients]
+      .sort((a, b) => a.position - b.position)
+      .map(draftIngredientFromRow),
+    steps: [...persisted.steps]
+      .sort((a, b) => a.position - b.position)
+      .map((row) => ({ position: row.position, text: row.text })),
+  };
+  if (raw !== undefined) draft.raw = raw;
+  return draft;
+}
+
+/**
+ * Decode a draft payload from the wire so no caller has to cast by hand.
+ * Accepts JSON text or an already-parsed value (JSON bodies). Throws
+ * SaveError("bad-draft") for anything that is not an object.
+ */
+export function decodeDraftPayload(payload: string | unknown): RecipeDraft {
+  const parsed =
+    typeof payload === "string" ? (JSON.parse(payload) as unknown) : payload;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new SaveError("bad-draft", "Draft payload must be a JSON object.");
+  }
+  return parsed as RecipeDraft;
+}
+
 /** Insert the child rows for a recipe. Caller supplies the transaction. */
-function insertChildren(recipeId: number, prepared: PreparedDraft): void {
+function insertChildren(recipeId: number, prepared: PersistedDraft): void {
   const db = getDb();
   if (prepared.ingredients.length > 0) {
     db.insert(ingredientLines)
@@ -147,7 +244,7 @@ function insertChildren(recipeId: number, prepared: PreparedDraft): void {
   }
   if (prepared.tags.length > 0) {
     db.insert(tags)
-      .values(prepared.tags.map((row) => ({ ...row, recipeId })))
+      .values(prepared.tags.map((label) => ({ label, recipeId })))
       .run();
   }
 }
@@ -251,6 +348,10 @@ export function deleteRecipe(id: number): boolean {
 /**
  * Re-read a draft from the DB by id. Used by the review screen to load an
  * existing draft for further editing before publish.
+ *
+ * Confidence is not read from storage (it is not there): composeDraft derives
+ * it from the persisted text, so a reload always agrees with the importer's
+ * rules.
  */
 export function loadDraft(id: number): RecipeDraft | null {
   const db = getDb();
@@ -264,33 +365,31 @@ export function loadDraft(id: number): RecipeDraft | null {
   const sts = db.select().from(steps).where(eq(steps.recipeId, id)).all();
   const tgs = db.select().from(tags).where(eq(tags.recipeId, id)).all();
 
-  return {
-    title: recipe.title,
-    titleConfidence: "ok",
-    category: recipe.category,
-    categoryConfidence: "ok",
-    yield: recipe.yield,
-    yieldConfidence: recipe.yield ? "ok" : "bad",
-    tags: tgs.map((t) => t.label),
-    sourceType: recipe.sourceType,
-    sourceUrl: recipe.sourceUrl,
-    rawOcrText: recipe.rawOcrText,
-    imageFilename: recipe.imageFilename,
-    favorite: recipe.favorite,
-    ingredients: ings
-      .sort((a, b) => a.position - b.position)
-      .map((row) => ({
-        text: [row.qty, row.unit, row.item, row.note].filter(Boolean).join(" ").trim(),
-        qty: row.qty,
-        unit: row.unit,
-        item: row.item,
-        note: row.note,
-        confidence: row.qty ? "ok" : "warn",
-      })),
-    steps: sts
-      .sort((a, b) => a.position - b.position)
-      .map((row) => ({ position: row.position, text: row.text })),
-  };
+  return composeDraft({
+    fields: {
+      title: recipe.title,
+      category: recipe.category,
+      yield: recipe.yield,
+      favorite: recipe.favorite,
+      sourceType: recipe.sourceType,
+      sourceUrl: recipe.sourceUrl,
+      rawOcrText: recipe.rawOcrText,
+      imageFilename: recipe.imageFilename,
+    },
+    ingredients: ings.map((row) => ({
+      qty: row.qty,
+      unit: row.unit,
+      item: row.item,
+      note: row.note,
+      position: row.position,
+      qtyAmount: row.qtyAmount,
+      qtyAmount2: row.qtyAmount2,
+      qtyUnitNormalized: row.qtyUnitNormalized,
+      qtyParseStatus: row.qtyParseStatus,
+    })),
+    steps: sts.map((row) => ({ position: row.position, text: row.text })),
+    tags: tgs.map((row) => row.label),
+  });
 }
 
 export class SaveError extends Error {
@@ -299,7 +398,8 @@ export class SaveError extends Error {
       | "title-required"
       | "invalid-category"
       | "insert-failed"
-      | "not-found",
+      | "not-found"
+      | "bad-draft",
     message: string,
   ) {
     super(message);

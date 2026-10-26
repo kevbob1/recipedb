@@ -5,7 +5,12 @@
  * from route exports (loader/action/...); a helper exported from the route
  * would be pulled into the client bundle and drag `auth.server` with it.
  */
-import { saveDraft, SaveError, deleteRecipe } from "./save-draft.server";
+import {
+  decodeDraftPayload,
+  deleteRecipe,
+  saveDraft,
+  SaveError,
+} from "./draft-store.server";
 import type { RecipeDraft } from "./draft";
 import { requireAuth } from "./auth.server";
 import {
@@ -53,7 +58,7 @@ async function parseSaveBody(
     }
     let draft: RecipeDraft;
     try {
-      draft = JSON.parse(raw) as RecipeDraft;
+      draft = decodeDraftPayload(raw);
     } catch {
       return { error: Response.json({ error: "bad-json" }, { status: 400 }) };
     }
@@ -81,7 +86,7 @@ async function parseSaveBody(
   }
 
   try {
-    const draft = (await request.json()) as RecipeDraft;
+    const draft = decodeDraftPayload(await request.json());
     return { draft, imageBytes: null };
   } catch {
     return { error: Response.json({ error: "bad-json" }, { status: 400 }) };

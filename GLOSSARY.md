@@ -14,6 +14,10 @@ _Avoid_: Dish, item, entry
 The editable state every imported recipe lands in, awaiting review. All imports become drafts; nothing publishes silently. Saving an edited draft revises it in place rather than creating a second recipe.
 _Avoid_: Pending, staging
 
+**Import**:
+Turning an outside input (URL, scan text, manual entry) into a Draft, stamping source type and initial confidences. URL fetch, scan recognition, and manual blank are adapters behind its seam, not separate flows.
+_Avoid_: Ingest
+
 **Review**:
 The pass over a draft where a person confirms or corrects it before it is a kept recipe. Auto-normalization at review is trim-only: whitespace, never content.
 _Avoid_: Approval, QA

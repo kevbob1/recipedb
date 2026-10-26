@@ -17,14 +17,21 @@ import { eq } from "drizzle-orm";
 import { runMigrations } from "../db/migrate.server";
 import { ensureDataDirs, getDb, getRawSqlite } from "../db/client.server";
 import { recipes, ingredientLines, steps, tags } from "../db/schema.server";
-import { blankDraft, type RecipeDraft } from "./draft";
+import {
+  CATEGORIES,
+  blankDraft,
+  requiredFieldConfidence,
+  type DraftIngredient,
+  type RecipeDraft,
+} from "./draft";
 import {
   loadDraft,
+  prepareDraft,
   saveDraft,
   updateDraft,
   deleteRecipe,
   SaveError,
-} from "./save-draft.server";
+} from "./draft-store.server";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
@@ -264,5 +271,152 @@ describe("deleteRecipe", () => {
 
     // Deleting again reports that there was nothing to delete.
     expect(deleteRecipe(recipeId)).toBe(false);
+  });
+});
+
+/** Deterministic PRNG so a failing property case is reproducible by seed. */
+function lcg(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 0x1_0000_0000;
+  };
+}
+
+function pick<T>(next: () => number, xs: readonly T[]): T {
+  return xs[Math.floor(next() * xs.length)]!;
+}
+
+/**
+ * An arbitrary but shape-legal draft: padded text, empty lines that must be
+ * dropped, near-duplicate tags, misleading badges. The point is not to model a
+ * real import but to hit the edges of what prepareDraft rewrites.
+ */
+function arbitraryDraft(seed: number): RecipeDraft {
+  const next = lcg(seed);
+  const pad = () => pick(next, ["", " ", "  "]);
+  const confidence = () => pick(next, ["ok", "warn", "bad"] as const);
+  const sourceType: RecipeDraft["sourceType"] = pick(next, [
+    "url",
+    "scan",
+    "manual",
+  ] as const);
+
+  const ingredients: DraftIngredient[] = Array.from(
+    { length: Math.floor(next() * 4) },
+    () => {
+      const qty = pick(next, ["", "1", "2-3", "1/2", "a pinch", " 1½ "]);
+      const unit = pick(next, [null, "", "cup", "cloves", "tbsp "]);
+      const item = pick(next, ["flour", " salt ", "", "beef chuck", "onions"]);
+      const note = pick(next, [null, "", " minced", "cut into cubes"]);
+      return {
+        text: pick(next, [
+          `${qty} ${unit ?? ""} ${item}`.trim(),
+          "raw line capture",
+          "",
+        ]),
+        qty,
+        unit,
+        item,
+        note,
+        confidence: confidence(),
+      };
+    },
+  );
+
+  return {
+    ...blankDraft(),
+    title: `${pad()}Arbitrary Dish ${seed}${pad()}`,
+    titleConfidence: confidence(),
+    category: pick(next, CATEGORIES),
+    categoryConfidence: confidence(),
+    yield: pick(next, [null, "", " 4 servings ", "2"]),
+    yieldConfidence: confidence(),
+    tags: Array.from({ length: Math.floor(next() * 4) }, () =>
+      pick(next, ["beef", "Beef", " quick ", "", "week night", "week  night"]),
+    ),
+    sourceType,
+    sourceUrl: sourceType === "url" ? " https://example.com/x " : null,
+    rawOcrText: sourceType === "scan" ? "1 cup flour\n\n2 eggs  " : null,
+    imageFilename: sourceType === "scan" ? ` ${seed}/original.png ` : null,
+    favorite: next() > 0.5,
+    ingredients,
+    steps: Array.from({ length: Math.floor(next() * 3) }, (_, i) => ({
+      position: i + 1,
+      text: pick(next, ["", "  ", "Mix.", " Bake 30 min. "]),
+    })),
+    raw: next() > 0.5 ? '{"@type":"Recipe"}' : undefined,
+  };
+}
+
+describe("save → load → save round-trip", () => {
+  /**
+   * Property: a loaded draft is a fixed point. Whatever prepareDraft rewrites
+   * on the first save (padding, empty lines, duplicate tags, numeric view,
+   * provenance) must already be settled when the same draft comes back out of
+   * storage, so saving it again cannot drift.
+   */
+  it("is idempotent for arbitrary drafts", () => {
+    for (let seed = 1; seed <= 40; seed += 1) {
+      const { recipeId } = saveDraft(arbitraryDraft(seed));
+
+      const first = loadDraft(recipeId);
+      expect(first, `seed ${seed}`).not.toBeNull();
+
+      updateDraft(recipeId, first!);
+      const second = loadDraft(recipeId);
+
+      expect(second, `seed ${seed}`).toEqual(first);
+      expect(prepareDraft(second!), `seed ${seed}`).toEqual(
+        prepareDraft(first!),
+      );
+    }
+  });
+
+  it("derives confidence from stored text, never from the payload", () => {
+    const misleading: RecipeDraft = {
+      ...blankDraft(),
+      title: "Actually Fine",
+      titleConfidence: "bad",
+      category: "other",
+      categoryConfidence: "warn",
+      yield: null,
+      yieldConfidence: "ok",
+      sourceType: "scan",
+      rawOcrText: "1 cup flour",
+      ingredients: [
+        {
+          text: "1 cup flour",
+          qty: "1",
+          unit: "cup",
+          item: "flour",
+          note: null,
+          confidence: "bad",
+        },
+        {
+          text: "salt",
+          qty: "",
+          unit: null,
+          item: "salt",
+          note: null,
+          confidence: "ok",
+        },
+      ],
+      raw: '{"@type":"Recipe"}',
+    };
+
+    const { recipeId } = saveDraft(misleading);
+    const loaded = loadDraft(recipeId)!;
+
+    expect(loaded.titleConfidence).toBe(requiredFieldConfidence(loaded.title));
+    expect(loaded.titleConfidence).toBe("ok");
+    expect(loaded.categoryConfidence).toBe("ok");
+    expect(loaded.yieldConfidence).toBe("bad");
+    expect(loaded.ingredients.map((ing) => ing.confidence)).toEqual([
+      "ok",
+      "warn",
+    ]);
+    // raw is transient: it never reaches storage, so a reload has none.
+    expect(loaded.raw).toBeUndefined();
   });
 });

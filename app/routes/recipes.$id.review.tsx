@@ -19,7 +19,13 @@ import {
   blankDraft,
   countNeedEyes,
 } from "../lib/draft";
-import { loadDraft, updateDraft, deleteRecipe, SaveError } from "../lib/save-draft.server";
+import {
+  decodeDraftPayload,
+  deleteRecipe,
+  loadDraft,
+  updateDraft,
+  SaveError,
+} from "../lib/draft-store.server";
 import { requireAuth } from "../lib/auth.server";
 
 export function meta({ data }: Route.MetaArgs) {
@@ -60,9 +66,9 @@ export async function action({ request, params }: Route.ActionArgs) {
     return Response.json({ ok: false, error: "empty-draft" }, { status: 400 });
   }
   try {
-    const incoming = JSON.parse(raw) as RecipeDraft;
     // Revise the row we loaded: the review screen edits one stored recipe.
-    updateDraft(id, incoming);
+    // The seam decodes the payload; the route never maps fields by hand.
+    updateDraft(id, decodeDraftPayload(raw));
     return redirect(`/recipes/${id}/review?saved=1`);
   } catch (err) {
     if (err instanceof SaveError) {
