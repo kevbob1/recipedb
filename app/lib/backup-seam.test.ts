@@ -7,12 +7,16 @@
  * PVC and a real ssh host. What CAN regress silently is the wiring, so these
  * assertions pin the parts that would make the job useless or dangerous:
  *
- *  - the chart gates the CronJob behind backup.enabled (off by default), and
- *    refuses to render an enabled job with no ssh Secret name
+ *  - the chart gates the CronJob and the backup ssh Secret behind
+ *    backup.enabled (off by default), and refuses to render an enabled job
+ *    with an empty sshKey / knownHosts
+ *  - ssh material flows helm values -> rendered Secret (stringData), and that
+ *    Secret is mounted ONLY by the backup pod: the Deployment must not
+ *    reference it, or a key rotation would restart the app
+ *  - the job runs the DEPLOYMENT image (one image: the runtime stage carries
+ *    ssh + rsync), not a separate <tag>-backup build
  *  - the /data claim is mounted READ-ONLY in both the volume and the mount
  *    (the app is the single writer; a backup pod must never write it)
- *  - the job runs in an image that actually has ssh + rsync (the app runtime
- *    image does not), while `--target runtime` still yields the app image
  *  - the script uses the SQLite-safe helper, carries the migration journal
  *    (without it a restore replays 0000_init and dies), pins host keys, and
  *    keeps 14 days
@@ -51,6 +55,14 @@ function blockAfter(source: string, header: string): string {
   return body.join("\n");
 }
 
+/** Dockerfile instruction lines only (the surrounding prose may name tools). */
+function dockerInstructions(source: string): string {
+  return source
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n");
+}
+
 describe("helm backup CronJob", () => {
   const cronJob = read("helm/recipedb/templates/backup-cronjob.yaml");
 
@@ -60,10 +72,17 @@ describe("helm backup CronJob", () => {
     expect(cronJob.trimEnd().endsWith("{{- end }}")).toBe(true);
   });
 
-  it("fails the render when enabled without an ssh Secret name", () => {
-    expect(cronJob).toMatch(
-      /required\s+"backup\.sshSecretName is required[^"]*"\s+\.Values\.backup\.sshSecretName/,
+  it("fails the render when enabled without ssh key material", () => {
+    // The required guards live in the Secret template the CronJob mounts.
+    const secret = read("helm/recipedb/templates/backup-secret.yaml");
+    expect(secret).toMatch(
+      /required\s+"backup\.sshKey is required[^"]*"\s+\.Values\.backup\.sshKey/,
     );
+    expect(secret).toMatch(
+      /required\s+"backup\.knownHosts is required[^"]*"\s+\.Values\.backup\.knownHosts/,
+    );
+    // ...and the CronJob must point at exactly that Secret.
+    expect(cronJob).toContain('secretName: {{ $fullname }}-backup-ssh');
   });
 
   it("mounts the data claim read-only in both the volume and the mount", () => {
@@ -77,18 +96,27 @@ describe("helm backup CronJob", () => {
     expect(volumes).toMatch(/readOnly:\s*true/);
   });
 
-  it("mounts the key + known_hosts from a Secret at 0400", () => {
-    expect(cronJob).toContain("defaultMode: 0400");
-    expect(cronJob).toContain(".Values.backup.secretKeys.privateKey");
-    expect(cronJob).toContain(".Values.backup.secretKeys.knownHosts");
+  it("mounts the key + known_hosts from the rendered Secret group-readable (0440 + fsGroup 1000)", () => {
+    expect(cronJob).toContain("defaultMode: 0440");
+    expect(cronJob).toContain("BACKUP_SSH_KEY");
+    expect(cronJob).toMatch(/value:\s*"\/secrets\/id_ed25519"/);
+    expect(cronJob).toContain("BACKUP_KNOWN_HOSTS");
+    expect(cronJob).toMatch(/value:\s*"\/secrets\/known_hosts"/);
     expect(cronJob).toMatch(/mountPath:\s*\/secrets/);
-    expect(cronJob).toContain("secretName: {{ $sshSecret }}");
+    expect(cronJob).toContain("secretName: {{ $fullname }}-backup-ssh");
+    // The secret is a mount, never an env-value source: the material must not
+    // end up in `kubectl describe pod` output.
+    expect(cronJob).not.toContain("secretKeyRef");
   });
 
-  it("runs the backup image stage (ssh tooling), not the app image tag", () => {
-    // <image.tag>-backup unless overridden; the app image has no ssh client.
-    expect(cronJob).toMatch(/printf\s+"%s-backup"\s+\$appTag/);
-    expect(cronJob).toContain('.Values.backup.image.tag | default');
+  it("runs the deployment image, not a separate backup tag", () => {
+    expect(cronJob).toContain(
+      'image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"',
+    );
+    expect(cronJob).toContain("imagePullPolicy: {{ .Values.image.pullPolicy }}");
+    expect(cronJob).toContain("{{- with .Values.imagePullSecrets }}");
+    // No leftovers from the retired backup stage / image overrides.
+    expect(cronJob).not.toMatch(/-backup"|backup\.image/);
     expect(cronJob).toContain('command: ["/bin/bash", "/app/backup-k8s.sh"]');
   });
 
@@ -100,37 +128,65 @@ describe("helm backup CronJob", () => {
   });
 });
 
-describe("backup image stage", () => {
-  const dockerfile = read("Dockerfile");
+describe("backup ssh Secret is rendered from values and isolated", () => {
+  const secret = read("helm/recipedb/templates/backup-secret.yaml");
+  const deployment = read("helm/recipedb/templates/deployment.yaml");
+  const cronJob = read("helm/recipedb/templates/backup-cronjob.yaml");
 
-  it("adds a backup stage on top of runtime with ssh + rsync", () => {
-    expect(dockerfile).toMatch(/^FROM runtime AS backup$/m);
-    const stage = dockerfile.slice(dockerfile.indexOf("FROM runtime AS backup"));
-    const beforeDevelopment = stage.slice(0, stage.indexOf("AS development"));
-    expect(beforeDevelopment).toContain("openssh-client");
-    expect(beforeDevelopment).toContain("rsync");
-    expect(beforeDevelopment).toContain("deploy/backup.cjs");
-    expect(beforeDevelopment).toContain("deploy/backup-k8s.sh");
-    expect(beforeDevelopment).toMatch(/USER node/);
+  it("renders <fullname>-backup-ssh as stringData from the values file", () => {
+    expect(secret).toMatch(/\{\{-\s*if\s+\.Values\.backup\.enabled\s*\}\}/);
+    expect(secret).toContain("kind: Secret");
+    expect(secret).toContain("-backup-ssh");
+    expect(secret).toContain("stringData:");
+    expect(secret).toMatch(/id_ed25519:\s*\{\{\s*required[^}]*\.Values\.backup\.sshKey/);
+    expect(secret).toMatch(/known_hosts:\s*\{\{\s*required[^}]*\.Values\.backup\.knownHosts/);
+    // base64 is the API server's job; the operator supplies raw PEM.
+    expect(secret).not.toContain("b64enc");
+    // Never part of the app Secret the Deployment checksums.
+    const appSecret = read("helm/recipedb/templates/secret.yaml");
+    expect(appSecret).not.toContain("backup");
   });
 
-  it("keeps the app stages unchanged -- runtime is still the app image", () => {
-    expect(dockerfile).toContain("CMD [\"node\", \"server.js\"]");
-    // The app image must not grow ssh: the clean-up keeps apt lists out.
-    // Instruction lines only: the explanatory comment above the backup stage
-    // mentions the tools it adds.
-    const runtime = dockerfile
-      .slice(
-        dockerfile.indexOf("FROM node:26.10.0-bookworm-slim AS runtime"),
-        dockerfile.indexOf("FROM runtime AS backup"),
-      )
-      .split("\n")
-      .filter((line) => !line.trimStart().startsWith("#"))
-      .join("\n");
-    expect(runtime).not.toContain("openssh-client");
-    expect(runtime).not.toContain("rsync");
-    // `docker build` with no --target must still produce the dev stage.
-    expect(dockerfile.trimEnd().endsWith("CMD [\"npm\", \"run\", \"dev\"]")).toBe(true);
+  it("is mounted only by the backup pod, never by the Deployment", () => {
+    expect(cronJob).toContain("-backup-ssh");
+    expect(deployment).not.toContain("-backup-ssh");
+    expect(deployment).not.toContain("backup.sshKey");
+    expect(deployment).not.toContain("/secrets");
+    // The Deployment still mounts only the data volume.
+    expect(deployment).toContain("- name: data");
+  });
+});
+
+describe("single runtime image carries the backup tooling", () => {
+  const dockerfile = read("Dockerfile");
+  const instructions = dockerInstructions(dockerfile);
+  const runtime = instructions.slice(
+    instructions.indexOf("FROM node:26.10.0-bookworm-slim AS runtime"),
+    instructions.indexOf("AS development"),
+  );
+
+  it("installs ssh + rsync into the runtime stage (no separate backup stage)", () => {
+    expect(dockerfile).not.toMatch(/^FROM runtime AS backup$/m);
+    expect(runtime).toContain("openssh-client");
+    expect(runtime).toContain("rsync");
+    expect(runtime).toMatch(/rm -rf \/var\/lib\/apt\/lists\/\*/);
+    expect(runtime).toContain("deploy/backup.cjs");
+    expect(runtime).toContain("deploy/backup-k8s.sh");
+    expect(runtime).toContain("chmod 0755 /app/backup.cjs /app/backup-k8s.sh");
+  });
+
+  it("keeps runtime the app image and development the last stage", () => {
+    expect(runtime).toContain('CMD ["node", "server.js"]');
+    expect(runtime).toContain("USER node");
+    expect(runtime).toContain("EXPOSE 3000");
+    // No leftover backup stage between runtime and development.
+    expect(instructions).not.toContain("AS backup");
+    // `docker build` with no --target must still produce the dev stage, and
+    // deploy.sh's `--target runtime` the app image.
+    expect(instructions.trimEnd().endsWith('CMD ["npm", "run", "dev"]')).toBe(true);
+    expect(dockerfile.lastIndexOf("FROM node:26.10.0-bookworm-slim AS development")).toBeGreaterThan(
+      dockerfile.lastIndexOf("AS runtime"),
+    );
   });
 });
 
@@ -167,7 +223,7 @@ describe("deploy/backup-k8s.sh", () => {
     expect(script).toContain("-print -delete");
   });
 
-  it("fails loudly when the ssh secret is missing", () => {
+  it("fails loudly when the ssh material is missing", () => {
     expect(script).toMatch(/missing SSH key \$BACKUP_SSH_KEY/);
     expect(script).toMatch(/missing known_hosts \$BACKUP_KNOWN_HOSTS/);
     expect(script).toMatch(/BACKUP_HOST is empty/);
@@ -178,11 +234,16 @@ describe("chart values default to backups off with 14-day retention", () => {
   const values = read("helm/recipedb/values.yaml");
   const backup = blockAfter(values, "backup:");
 
-  it("defaults enabled to false and retentionDays to 14", () => {
+  it("defaults enabled to false, empty ssh material, retentionDays 14", () => {
     expect(backup).toMatch(/^\s+enabled:\s*false$/m);
     expect(backup).toMatch(/^\s+retentionDays:\s*14$/m);
-    expect(backup).toMatch(/^\s+sshSecretName:\s*""$/m);
+    expect(backup).toMatch(/^\s+sshKey:\s*""$/m);
+    expect(backup).toMatch(/^\s+knownHosts:\s*""$/m);
     expect(backup).toMatch(/^\s+schedule:\s*"17 6 \* \* \*"$/m);
+    // The retired operator-created-Secret / separate-image knobs are gone.
+    expect(backup).not.toContain("sshSecretName");
+    expect(backup).not.toContain("secretKeys");
+    expect(backup).not.toMatch(/^\s+image:/m);
   });
 
   it("keeps the existing app values untouched", () => {

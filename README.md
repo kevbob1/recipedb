@@ -42,7 +42,9 @@ never a raw copy of a live WAL), tars `images/` when present, copies
 `migrations-applied.json`, `rsync`s all three artifacts to
 `root@prox6:/srv/recipedb/backups/` over ssh, and prunes remote artifacts older
 than 14 days. It is **off by default** (`backup.enabled: false`) because it
-needs an ssh key that this chart does not own.
+needs an ssh key. It runs the **same image as the app** (the Dockerfile runtime
+stage carries `openssh-client`, `rsync` and `backup-k8s.sh`), so there is no
+separate backup image to build or push.
 
 Bootstrap, once:
 
@@ -57,37 +59,39 @@ Bootstrap, once:
    # keep it in a 0600 file outside the repo
    ```
 
-2. Create the Secret in the cluster (key + pinned host key; no key material in
-   git or in the helm values file):
-
-   ```bash
-   kubectl -n default create secret generic recipedb-backup-ssh \
-     --from-file=id_ed25519=$HOME/.config/recipedb/backup-id_ed25519 \
-     --from-file=known_hosts=<(ssh-keyscan -t ed25519 prox6)
-   ```
-
-3. Turn it on and redeploy — in `~/.config/recipedb/k8s-secrets.yaml` (see
-   `helm/recipedb/secrets.example.yaml`):
+2. Put the key material in the backup block of the secrets values file
+   (`~/.config/recipedb/k8s-secrets.yaml`, mode 0600 — the same file that holds
+   `FAMILY_PASSWORD_HASH`/`SESSION_SECRET`, see `helm/recipedb/secrets.example.yaml`).
+   Helm renders it into the `<release>-backup-ssh` Secret, which only the backup
+   pod mounts (the Deployment never sees it):
 
    ```yaml
    backup:
      enabled: true
-     sshSecretName: recipedb-backup-ssh
+     sshKey: |
+       -----BEGIN OPENSSH PRIVATE KEY-----
+       ...contents of ~/.config/recipedb/backup-id_ed25519...
+       -----END OPENSSH PRIVATE KEY-----
+     knownHosts: |
+       prox6 ssh-ed25519 AAAA...   # ssh-keyscan -t ed25519 prox6
      # host: prox6            # defaults
      # path: /srv/recipedb/backups
      # retentionDays: 14
    ```
 
-   then `deploy/k8s/deploy.sh`. The job image is the Dockerfile `backup` stage
-   (`<image.tag>-backup`, runtime + openssh-client + rsync), so build and push
-   that tag from the same commit as the app image:
+   `backup.sshKey` and `backup.knownHosts` are required whenever
+   `backup.enabled` is true — `helm template`/`upgrade` fails rather than arming
+   a CronJob that cannot log in.
+
+3. Redeploy with the normal script — no `kubectl create secret`, no separate
+   image push:
 
    ```bash
-   docker buildx build --target backup --platform linux/amd64 --push \
-     -t registry.k.pd.o/recipedb:<tag>-backup .
+   deploy/k8s/deploy.sh
    ```
 
-One-shot test instead of waiting for the schedule:
+One-shot test instead of waiting for the schedule (the job name follows the
+release's fullname; `<release>` is `recipedb`):
 
 ```bash
 kubectl -n default create job --from=cronjob/recipedb-backup recipedb-backup-manual

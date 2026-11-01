@@ -144,10 +144,14 @@ secrets:
 # scale-down -- the SQLite online backup API is consistent under live WAL
 # writes.
 #
-# OFF by default: the CronJob needs an ssh key + known_hosts that are NOT part
-# of this chart (they are a separate k8s Secret created by the operator, see
-# README "Backups (k8s)"). Flip enabled to true only after that Secret exists
-# and the key is authorized on the backup host.
+# OFF by default: the CronJob needs an ssh key + known_hosts; set them via
+# backup.sshKey / backup.knownHosts from the out-of-repo secrets values file
+# (README "Backups (k8s)"). Flip enabled to true only after the key is
+# authorized on the backup host.
+#
+# ONE IMAGE: the job runs exactly the Deployment image (image.repository/tag
+# above). The Dockerfile runtime stage carries openssh-client + rsync +
+# backup-k8s.sh, so there is no separate backup tag to build or push.
 # -----------------------------------------------------------------------------
 backup:
   enabled: false
@@ -157,19 +161,21 @@ backup:
   host: "prox6"
   sshUser: "root"
   path: "/srv/recipedb/backups"
-  # Name of the pre-existing Secret holding the private key + known_hosts.
-  # Required at render time when enabled=true.
-  sshSecretName: ""
-  # Secret item keys; they are also the paths inside /secrets.
-  secretKeys:
-    privateKey: "id_ed25519"
-    knownHosts: "known_hosts"
-  # "" / "" -> "<image.repository>:<image.tag>-backup", i.e. the Dockerfile
-  # `backup` stage built from the same commit as the app image:
-  #   docker buildx build --target backup --push -t <repo>:<tag>-backup .
-  image:
-    repository: ""
-    tag: ""
+  # Rendered by templates/backup-secret.yaml into
+  # <fullname>-backup-ssh (Opaque, stringData id_ed25519 + known_hosts) and
+  # mounted only by the backup pod at /secrets. Both are required when
+  # enabled=true (the render fails otherwise). Supply them from the 0600
+  # secrets values file, never from this file -- use the |- block scalar for
+  # the multi-line PEM:
+  #
+  #   backup:
+  #     sshKey: |
+  #       -----BEGIN OPENSSH PRIVATE KEY-----
+  #       ...
+  sshKey: ""
+  # Consolidated `ssh-keyscan -t ed25519 <host>` output (one or more lines).
+  # Pinned deliberately: the job runs StrictHostKeyChecking=yes, no TOFU.
+  knownHosts: ""
   backoffLimit: 2
   activeDeadlineSeconds: 3600
   startingDeadlineSeconds: 3600

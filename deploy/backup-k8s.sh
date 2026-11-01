@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Nightly in-cluster backup orchestrator (roadmap item 3, disaster recovery).
 #
-# Runs inside the `backup` image stage (see Dockerfile) as a k8s CronJob that
-# mounts the /data PVC READ-ONLY and an ssh Secret at /secrets. It produces the
+# Runs inside the app's own runtime image (see Dockerfile) as a k8s CronJob
+# that mounts the /data PVC READ-ONLY and the rendered backup ssh Secret at
+# /secrets (helm/recipedb/templates/backup-secret.yaml). It produces the
 # same three artifacts as the retired docker-era deploy/backup.sh:
 #
 #   recipes-<STAMP>.db            consistent copy via backup.cjs (online API)
@@ -35,11 +36,12 @@ BACKUP_PATH="${BACKUP_PATH:-/srv/recipedb/backups}"
 RETENTION_DAYS="${RETENTION_DAYS:-14}"
 BACKUP_SSH_PORT="${BACKUP_SSH_PORT:-22}"
 
-# Mounted from the ssh Secret (kubectl create secret generic ... --from-file).
+# Mounted from the chart's rendered <fullname>-backup-ssh Secret (its
+# stringData comes from backup.sshKey / backup.knownHosts in the values file).
 BACKUP_SSH_KEY="${BACKUP_SSH_KEY:-/secrets/id_ed25519}"
 BACKUP_KNOWN_HOSTS="${BACKUP_KNOWN_HOSTS:-/secrets/known_hosts}"
 
-# /app/backup.cjs is baked into the backup image at that path and pins its
+# /app/backup.cjs is baked into the runtime image at that path and pins its
 # source to /data/recipes.db; DATA_DIR only affects the side artifacts.
 BACKUP_CJS="${BACKUP_CJS:-/app/backup.cjs}"
 
@@ -48,10 +50,10 @@ die() { printf '[backup] error: %s\n' "$*" >&2; exit 1; }
 
 # --- preflight -------------------------------------------------------------
 [[ -n "$BACKUP_HOST" ]] || die "BACKUP_HOST is empty (set backup.host in the chart values)"
-[[ -f "$BACKUP_SSH_KEY" ]] || die "missing SSH key $BACKUP_SSH_KEY -- mount the ssh Secret (kubectl create secret generic recipedb-backup-ssh --from-file=id_ed25519=... --from-file=known_hosts=...)"
+[[ -f "$BACKUP_SSH_KEY" ]] || die "missing SSH key $BACKUP_SSH_KEY -- set backup.sshKey in the chart values (helm renders it into the -backup-ssh Secret)"
 [[ -r "$BACKUP_SSH_KEY" ]] || die "SSH key $BACKUP_SSH_KEY is not readable by uid $(id -u) (secret defaultMode must be 0400 and owned by the pod uid)"
-[[ -f "$BACKUP_KNOWN_HOSTS" ]] || die "missing known_hosts $BACKUP_KNOWN_HOSTS -- include it in the same ssh Secret (ssh-keyscan $BACKUP_HOST)"
-[[ -f "$BACKUP_CJS" ]] || die "missing $BACKUP_CJS -- this pod is not running the 'backup' image stage"
+[[ -f "$BACKUP_KNOWN_HOSTS" ]] || die "missing known_hosts $BACKUP_KNOWN_HOSTS -- set backup.knownHosts from ssh-keyscan $BACKUP_HOST"
+[[ -f "$BACKUP_CJS" ]] || die "missing $BACKUP_CJS -- this pod is not running the recipedb runtime image"
 [[ -f "$DATA_DIR/recipes.db" ]] || die "missing $DATA_DIR/recipes.db -- is the data PVC mounted read-only at $DATA_DIR?"
 
 # StrictHostKeyChecking=yes + a mounted known_hosts is deliberate: host keys are

@@ -1,26 +1,28 @@
 {{- /*
 Nightly disaster-recovery backup (roadmap item 3).
 
-Gated on backup.enabled: the release must keep deploying cleanly while the ssh
-key Secret does not exist yet, so the default is `false`. When it is on,
-`sshSecretName` is required -- a CronJob that cannot authenticate would just
-fail every night, silently.
+Gated on backup.enabled: the default is `false` so a release keeps deploying
+before the ssh key material has been put in the (out-of-repo) secrets values
+file. When it is on, templates/backup-secret.yaml fails the render unless both
+backup.sshKey and backup.knownHosts are non-empty -- a CronJob that cannot
+authenticate would just fail every night, silently.
+
+There is ONE image: this job runs the Deployment image (same repository/tag/
+pullPolicy/imagePullSecrets). The runtime stage of the Dockerfile carries
+openssh-client + rsync + backup-k8s.sh, so app and backup always ship together.
 
 The pod co-mounts the app's RWO PVC read-only (local-path is node-local, so it
-schedules next to the app; a second read-only mount is safe) and runs
-deploy/backup-k8s.sh from the `backup` image stage. The DB copy itself goes
-through better-sqlite3's online backup API, which is consistent under live WAL
-writes -- no scale-down, no quiescing.
+schedules next to the app; a second read-only mount is safe) and mounts the
+rendered ssh Secret at /secrets. The DB copy itself goes through
+better-sqlite3's online backup API, which is consistent under live WAL writes --
+no scale-down, no quiescing.
 */ -}}
 {{- if .Values.backup.enabled }}
-{{- $sshSecret := required "backup.sshSecretName is required when backup.enabled=true: kubectl create secret generic recipedb-backup-ssh --from-file=id_ed25519=<key> --from-file=known_hosts=<ssh-keyscan output> (see README, Backups (k8s))" .Values.backup.sshSecretName }}
-{{- $imageRepo := .Values.backup.image.repository | default .Values.image.repository }}
-{{- $appTag := .Values.image.tag | default .Chart.AppVersion }}
-{{- $imageTag := .Values.backup.image.tag | default (printf "%s-backup" $appTag) }}
+{{- $fullname := include "recipedb.fullname" . }}
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "recipedb.fullname" . }}-backup
+  name: {{ $fullname }}-backup
   labels:
     {{- include "recipedb.labels" . | nindent 4 }}
     app.kubernetes.io/component: backup
@@ -42,9 +44,9 @@ spec:
             {{- include "recipedb.selectorLabels" . | nindent 12 }}
             app.kubernetes.io/component: backup
           annotations:
-            # The ssh Secret lives outside this chart (operator-created), so
-            # there is nothing to checksum -- record which one the run used.
-            recipedb/backup-ssh-secret: {{ $sshSecret | quote }}
+            # The ssh key lives in this chart's own backup Secret now, so a key
+            # rotation should roll the next pod template rather than nothing.
+            checksum/backup-secret: {{ include (print $.Template.BasePath "/backup-secret.yaml") . | sha256sum }}
         spec:
           restartPolicy: Never
           securityContext:
@@ -55,10 +57,12 @@ spec:
           {{- end }}
           containers:
             - name: backup
-              # `backup` Dockerfile stage = runtime + openssh-client + rsync.
-              # The app image has no ssh client, so this tag is not optional.
-              image: "{{ $imageRepo }}:{{ $imageTag }}"
+              # Same image as the Deployment, by construction: the runtime
+              # stage has the ssh tooling, so there is no separate backup tag.
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
               imagePullPolicy: {{ .Values.image.pullPolicy }}
+              # backup-k8s.sh is bash (set -euo pipefail, arrays); bookworm-slim
+              # ships /bin/bash.
               command: ["/bin/bash", "/app/backup-k8s.sh"]
               env:
                 - name: DATA_DIR
@@ -77,9 +81,9 @@ spec:
                 - name: HOME
                   value: "/tmp"
                 - name: BACKUP_SSH_KEY
-                  value: "/secrets/{{ .Values.backup.secretKeys.privateKey }}"
+                  value: "/secrets/id_ed25519"
                 - name: BACKUP_KNOWN_HOSTS
-                  value: "/secrets/{{ .Values.backup.secretKeys.knownHosts }}"
+                  value: "/secrets/known_hosts"
               volumeMounts:
                 # READ-ONLY: the backup pod must never be able to write the
                 # volume the single-writer app owns.
@@ -98,11 +102,11 @@ spec:
                 readOnly: true
             - name: ssh
               secret:
-                secretName: {{ $sshSecret }}
-                defaultMode: 0400
+                secretName: {{ $fullname }}-backup-ssh
+                defaultMode: 0440
                 items:
-                  - key: {{ .Values.backup.secretKeys.privateKey }}
-                    path: {{ .Values.backup.secretKeys.privateKey }}
-                  - key: {{ .Values.backup.secretKeys.knownHosts }}
-                    path: {{ .Values.backup.secretKeys.knownHosts }}
+                  - key: id_ed25519
+                    path: id_ed25519
+                  - key: known_hosts
+                    path: known_hosts
 {{- end }}
