@@ -1,30 +1,22 @@
 /**
- * HTTP parsing for POST /api/save-draft.
+ * HTTP transport for POST /api/save-draft: body bytes -> SaveCommand.
  *
- * This module decodes bodies only (JSON or multipart, new or existing, with or
- * without the original capture). It makes no persistence decision and never
- * touches the database — the route dispatches to the store seam, and
- * app/lib/draft-store.server.ts owns everything that follows.
+ * This module is a pure adapter. It reads either transport (JSON or multipart),
+ * keeps the cheap `file.size` pre-check, and returns the command the store
+ * should run. It makes no persistence decision, never touches the database,
+ * and never decodes a draft: the wire draft rides through untouched and
+ * app/lib/save-command.ts decides whether it is valid. The definitive
+ * validateScanUpload happens in the store, on the bytes.
  *
  * Lives outside the route module because React Router strips server code only
  * from route exports (loader/action/...); a helper exported from the route
  * would be pulled into the client bundle.
  */
-import type { RecipeDraft } from "./draft";
-import { decodeDraftPayload } from "./draft-store.server";
 import { MAX_SCAN_UPLOAD_BYTES } from "./scan/index.server";
+import type { SaveCommand } from "./save-command";
 
-/** What a save request asks the store to do. */
-export interface ParsedSaveRequest {
-  /** Null only for a delete intent, which carries no draft. */
-  draft: RecipeDraft | null;
-  imageBytes: Buffer | null;
-  /** Present when revising (or deleting) an already-stored recipe. */
-  recipeId: number | null;
-  intent: "delete" | null;
-}
-
-export type ParseSaveResult = ParsedSaveRequest | { error: Response };
+/** A command ready to dispatch, or a Response the caller should return. */
+export type ParseSaveResult = SaveCommand | { error: Response };
 
 function badRequest(error: string, message?: string): { error: Response } {
   return {
@@ -42,11 +34,32 @@ function readIntent(value: unknown): "delete" | null {
   return value === "delete" ? "delete" : null;
 }
 
+/** A delete needs an id; without one the request carries no command. */
+function deleteCommand(recipeId: number | null): ParseSaveResult {
+  if (recipeId === null) return badRequest("bad-recipe-id");
+  return { kind: "delete", recipeId };
+}
+
+/**
+ * Turn a present draft into a new-or-revise command. `draft` stays raw (a JSON
+ * string for multipart, the parsed value for JSON bodies) because decoding is
+ * a validity decision owned by the store.
+ */
+function draftCommand(
+  recipeId: number | null,
+  draft: unknown,
+  imageBytes: Buffer | null,
+): ParseSaveResult {
+  return recipeId === null
+    ? { kind: "new", draft, imageBytes }
+    : { kind: "revise", recipeId, draft };
+}
+
 /**
  * Read the draft, optional capture, and routing fields from either transport.
  * Returns a Response for malformed input so the caller can early-return.
  *
- * Accepted shapes:
+ * Accepted shapes (unchanged):
  *  - JSON `{ draft, recipeId?, intent? }` (and the legacy bare draft)
  *  - multipart `draft`, `image?`, `recipeId?`, `intent?`
  */
@@ -77,20 +90,14 @@ async function parseJsonBody(request: Request): Promise<ParseSaveResult> {
 
   if (!wrapper) {
     // Legacy shape: the JSON body *is* the draft.
-    return { draft: decodeDraftPayload(payload), imageBytes: null, recipeId, intent };
+    return draftCommand(recipeId, payload, null);
   }
 
-  let draft: RecipeDraft | null = null;
-  if (body.draft !== null && body.draft !== undefined) {
-    try {
-      draft = decodeDraftPayload(body.draft);
-    } catch {
-      return badRequest("bad-json");
-    }
+  if (intent === "delete") return deleteCommand(recipeId);
+  if (body.draft === null || body.draft === undefined) {
+    return badRequest("missing-draft");
   }
-  if (!draft && intent !== "delete") return badRequest("missing-draft");
-
-  return { draft, imageBytes: null, recipeId, intent };
+  return draftCommand(recipeId, body.draft, null);
 }
 
 async function parseMultipartBody(request: Request): Promise<ParseSaveResult> {
@@ -104,22 +111,18 @@ async function parseMultipartBody(request: Request): Promise<ParseSaveResult> {
   const recipeId = readRecipeId(form.get("recipeId"));
   if (recipeId === undefined) return badRequest("bad-recipe-id");
   const intent = readIntent(form.get("intent"));
+  if (intent === "delete") return deleteCommand(recipeId);
 
   const rawDraft = form.get("draft");
-  let draft: RecipeDraft | null = null;
-  if (typeof rawDraft === "string" && rawDraft.length > 0) {
-    try {
-      draft = decodeDraftPayload(rawDraft);
-    } catch {
-      return badRequest("bad-json");
-    }
+  if (typeof rawDraft !== "string" || rawDraft.length === 0) {
+    return badRequest("missing-draft");
   }
-  if (!draft && intent !== "delete") return badRequest("missing-draft");
 
   const file = form.get("image");
-  if (file === null) return { draft, imageBytes: null, recipeId, intent };
+  if (file === null) return draftCommand(recipeId, rawDraft, null);
   if (typeof file === "string") return badRequest("bad-image");
-  // Cheap pre-check before buffering; the definitive check is on the bytes.
+  // Cheap pre-check before buffering; the definitive check is on the bytes
+  // inside the store.
   if (file.size > MAX_SCAN_UPLOAD_BYTES) {
     return {
       error: Response.json(
@@ -131,10 +134,9 @@ async function parseMultipartBody(request: Request): Promise<ParseSaveResult> {
       ),
     };
   }
-  return {
-    draft,
-    imageBytes: Buffer.from(await file.arrayBuffer()),
-    recipeId,
-    intent,
-  };
+
+  const imageBytes = Buffer.from(await file.arrayBuffer());
+  // Revisions do not attach captures (unchanged): the bytes were still
+  // size-checked, then dropped before the command is built.
+  return draftCommand(recipeId, rawDraft, recipeId === null ? imageBytes : null);
 }

@@ -2,10 +2,15 @@
  * Draft persistence seam — the one place that converts between the review
  * screen's editable RecipeDraft and the relational rows.
  *
- * Everything below the review UI goes through here: `prepareDraft` (validate
- * + normalize + derive the numeric view), `saveDraft`, `updateDraft`,
- * `loadDraft`, `deleteRecipe`. Routes and transports hand over a draft; they
- * never map fields onto columns themselves.
+ * Everything below the review UI goes through `executeSave`, the one command
+ * entry that owns every save decision (new / revise / delete), plus
+ * `loadDraft` and `deleteRecipe`. Routes and transports hand over a
+ * SaveCommand; they never map fields onto columns themselves.
+ *
+ * `executeSave` is a thin sequencer over app/lib/save-command.ts, which holds
+ * the pure half of the seam: payload decoding, field validation, and the
+ * SaveCommand -> ValidatedSaveCommand step. This module adds the transactions
+ * and the capture lifecycle.
  *
  * Domain source of truth: ../GLOSSARY.md
  *  - Recipe: a single stored dish, one import or manual entry. No merge.
@@ -41,19 +46,20 @@ import {
   tags,
   type NewIngredientLine,
   type NewRecipe,
-  type NewStep,
 } from "../db/schema.server";
-import { CATEGORIES, type Category } from "./categories";
 import {
-  type Confidence,
   type DraftIngredient,
   type RecipeDraft,
   ingredientConfidence,
   optionalFieldConfidence,
   requiredFieldConfidence,
 } from "./draft";
-import { normalizeTag, trimOnly, trimOnlyRequired } from "./normalize";
-import { fromText } from "./ingredient-line";
+import {
+  SaveError,
+  validateSaveCommand,
+  type PersistedDraft,
+  type SaveCommand,
+} from "./save-command";
 import {
   ScanImageError,
   attachImageFilename,
@@ -62,112 +68,19 @@ import {
   validateScanUpload,
 } from "./scan/index.server";
 
+// The pure half of the seam lives in ./save-command (payload decode + field
+// validation + the command union); re-exported here so existing callers keep
+// importing the store as their single entry point.
+export { SaveError, decodeDraftPayload, prepareDraft } from "./save-command";
+export type {
+  PersistedDraft,
+  SaveCommand,
+  ValidatedSaveCommand,
+} from "./save-command";
+
 export interface SaveDraftResult {
   recipeId: number;
   isDraft: true;
-}
-
-/**
- * The persisted half of a draft: DB-ready recipe columns plus child rows.
- * Deliberately carries no confidence and no `raw` — preparing a draft is
- * exactly the act of dropping transient review state.
- */
-export interface PersistedDraft {
-  fields: {
-    title: string;
-    category: Category;
-    yield: string | null;
-    favorite: boolean;
-    sourceType: RecipeDraft["sourceType"];
-    sourceUrl: string | null;
-    rawOcrText: string | null;
-    imageFilename: string | null;
-  };
-  ingredients: Omit<NewIngredientLine, "recipeId">[];
-  steps: Omit<NewStep, "recipeId">[];
-  tags: string[];
-}
-
-/**
- * Validate + normalize a draft exactly once, for both insert and update.
- * Ignores every incoming confidence badge: those are derived, not stored.
- * Throws SaveError on a missing title, an unknown category, or a malformed
- * payload.
- */
-export function prepareDraft(draft: RecipeDraft): PersistedDraft {
-  const title = trimOnlyRequired(draft.title);
-  if (!title) {
-    throw new SaveError("title-required", "A title is required to save a draft.");
-  }
-  if (!CATEGORIES.includes(draft.category as Category)) {
-    throw new SaveError(
-      "invalid-category",
-      `Category "${draft.category}" is not in the MVP list.`,
-    );
-  }
-
-  // Positions are assigned after the empty-line filter, so a draft that loses
-  // a middle line on its first save does not leave a positional gap that the
-  // next save would close (prepareDraft must be a fixed point — #2).
-  const ingredients: Omit<NewIngredientLine, "recipeId">[] = draft.ingredients
-    .map((ing) => {
-      const qty = trimOnlyRequired(ing.qty);
-      const unit = trimOnly(ing.unit);
-      // Parse-on-write, always from the text. Any `qty*` fields carried on the
-      // draft are ignored: the numeric columns are derived here, so a stale or
-      // crafted parse (e.g. amount 999 with status `parsed`) can never survive
-      // a save. See the decision on #15.
-      const parsed = fromText(qty, unit);
-      return {
-        qty,
-        unit,
-        item: trimOnlyRequired(ing.item || ing.text),
-        note: trimOnly(ing.note),
-        position: 0,
-        qtyAmount: parsed.qtyAmount,
-        qtyAmount2: parsed.qtyAmount2,
-        qtyUnitNormalized: parsed.qtyUnitNormalized,
-        qtyParseStatus: parsed.qtyParseStatus,
-      };
-    })
-    .filter((row) => row.item.length > 0)
-    .map((row, i) => ({ ...row, position: i + 1 }));
-
-  const steps: Omit<NewStep, "recipeId">[] = draft.steps
-    .map((s) => ({
-      position: 0,
-      text: trimOnlyRequired(s.text),
-    }))
-    .filter((row) => row.text.length > 0)
-    .map((row, i) => ({ ...row, position: i + 1 }));
-
-  const tagLabels = (() => {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const t of draft.tags) {
-      const label = normalizeTag(t);
-      if (!label || seen.has(label)) continue;
-      seen.add(label);
-      out.push(label);
-    }
-    return out;
-  })();
-
-  return {
-    fields: {
-      title,
-      category: draft.category as Category,
-      yield: trimOnly(draft.yield),
-      favorite: draft.favorite,
-      sourceType: draft.sourceType,
-      sourceUrl: trimOnly(draft.sourceUrl),
-      rawOcrText: trimOnly(draft.rawOcrText),
-      imageFilename: trimOnly(draft.imageFilename),
-    },
-    ingredients,
-    steps,
-    tags: tagLabels,
-  };
 }
 
 /** Rebuild one editable ingredient line from its stored parts. */
@@ -221,20 +134,6 @@ export function composeDraft(
   return draft;
 }
 
-/**
- * Decode a draft payload from the wire so no caller has to cast by hand.
- * Accepts JSON text or an already-parsed value (JSON bodies). Throws
- * SaveError("bad-draft") for anything that is not an object.
- */
-export function decodeDraftPayload(payload: string | unknown): RecipeDraft {
-  const parsed =
-    typeof payload === "string" ? (JSON.parse(payload) as unknown) : payload;
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new SaveError("bad-draft", "Draft payload must be a JSON object.");
-  }
-  return parsed as RecipeDraft;
-}
-
 /** Insert the child rows for a recipe. Caller supplies the transaction. */
 function insertChildren(recipeId: number, prepared: PersistedDraft): void {
   const db = getDb();
@@ -263,8 +162,43 @@ function deleteChildren(recipeId: number): void {
   db.delete(tags).where(eq(tags.recipeId, recipeId)).run();
 }
 
+/** Result of a dispatched save command. */
+export type SaveResult = SaveDraftResult | DeleteDraftResult;
+
 /**
- * Persist a NEW draft, optionally attaching the original scan capture.
+ * The store's single entry point: validate the command, then sequence storage.
+ *
+ * Every validity decision — payload decode, field checks, recipe-id checks —
+ * belongs to `validateSaveCommand` in ./save-command. This function only
+ * chooses the storage path, so no transport can re-open a decision by shaping
+ * its own arguments (candidate #1).
+ */
+export function executeSave(command: SaveCommand): SaveResult {
+  const validated = validateSaveCommand(command);
+  switch (validated.kind) {
+    case "new":
+      return insertNewRecipe(validated.prepared, validated.imageBytes);
+    case "revise":
+      return reviseDraft(validated.recipeId, validated.prepared);
+    case "delete":
+      return removeRecipe(validated.recipeId);
+  }
+}
+
+/** Narrow a dispatched result to one that left a draft in storage. */
+function savedDraft(result: SaveResult): SaveDraftResult {
+  if ("deleted" in result) {
+    throw new SaveError(
+      "insert-failed",
+      "A save that stores a draft cannot also delete it.",
+    );
+  }
+  return result;
+}
+
+/**
+ * Persist an ALREADY-VALIDATED new recipe, optionally attaching the original
+ * scan capture.
  *
  * The capture is part of the same unit of work as the recipe: bytes are
  * validated before any write, then written and linked inside the transaction.
@@ -275,11 +209,10 @@ function deleteChildren(recipeId: number): void {
  * The caller is responsible for setting isDraft = true; we never publish
  * silently. (`publish: true` is not part of the MVP — see ticket #11.)
  */
-export function saveNewDraft(
-  draft: RecipeDraft,
-  imageBytes?: Buffer | null,
+function insertNewRecipe(
+  prepared: PersistedDraft,
+  imageBytes: Buffer | null,
 ): SaveDraftResult {
-  const prepared = prepareDraft(draft);
   // Validate before touching storage: a bad capture cannot create a recipe.
   if (imageBytes) validateScanUpload(imageBytes);
 
@@ -320,6 +253,16 @@ export function saveNewDraft(
   return { recipeId, isDraft: true };
 }
 
+/** Back-compat wrapper for the new-draft path. Prefer executeSave. */
+export function saveNewDraft(
+  draft: RecipeDraft,
+  imageBytes?: Buffer | null,
+): SaveDraftResult {
+  return savedDraft(
+    executeSave({ kind: "new", draft, imageBytes: imageBytes ?? null }),
+  );
+}
+
 /** Back-compat alias for the no-image save path. Prefer saveNewDraft. */
 export function saveDraft(draft: RecipeDraft): SaveDraftResult {
   return saveNewDraft(draft);
@@ -341,43 +284,44 @@ export interface DeleteDraftResult {
 }
 
 /**
- * Persist the review screen's state for an EXISTING recipe, or act on its
- * delete intent.
+ * Back-compat wrapper for the review screen's existing-recipe path. Prefer
+ * executeSave({ kind: "revise" | "delete", ... }).
  *
  * `delete: true` removes the row (child rows via CASCADE, capture via the Scan
  * module) and returns `{ deleted: true }`; `draft` is ignored in that case.
- * Otherwise the draft is validated and written exactly like saveNewDraft.
+ * Otherwise the draft is validated and written exactly like a new save.
  */
 export function saveExistingDraft(
   id: number,
   draft: RecipeDraft | null,
   opts: SaveExistingDraftOptions = {},
 ): SaveDraftResult | DeleteDraftResult {
-  if (opts.delete) {
-    if (!deleteRecipe(id)) {
-      throw new SaveError("not-found", `Recipe #${id} was not found.`);
-    }
-    return { recipeId: id, deleted: true };
-  }
-  if (!draft) {
-    throw new SaveError("bad-draft", "A draft is required to save a recipe.");
-  }
-  return reviseDraft(id, draft);
+  if (opts.delete) return executeSave({ kind: "delete", recipeId: id });
+  // A null draft is rejected by validateSaveCommand (bad-draft); the wrapper
+  // adds no rule of its own.
+  return executeSave({ kind: "revise", recipeId: id, draft });
 }
 
 /** Back-compat alias for the revise path. Prefer saveExistingDraft. */
 export function updateDraft(id: number, draft: RecipeDraft): SaveDraftResult {
-  return reviseDraft(id, draft);
+  return savedDraft(executeSave({ kind: "revise", recipeId: id, draft }));
+}
+
+/** Remove an already-validated recipe id. */
+function removeRecipe(recipeId: number): DeleteDraftResult {
+  if (!deleteRecipe(recipeId)) {
+    throw new SaveError("not-found", `Recipe #${recipeId} was not found.`);
+  }
+  return { recipeId, deleted: true };
 }
 
 /**
- * Revise an existing recipe in place. Same validation and normalization as
- * saveNewDraft; replaces title/provenance fields and rewrites all child rows
- * (ingredient lines, steps, tags) inside one transaction. Throws SaveError
- * with code "not-found" when no recipe has that id.
+ * Revise an ALREADY-VALIDATED recipe in place. Replaces title/provenance
+ * fields and rewrites all child rows (ingredient lines, steps, tags) inside one
+ * transaction. Throws SaveError with code "not-found" when no recipe has that
+ * id.
  */
-function reviseDraft(id: number, draft: RecipeDraft): SaveDraftResult {
-  const prepared = prepareDraft(draft);
+function reviseDraft(id: number, prepared: PersistedDraft): SaveDraftResult {
   const now = new Date();
   const db = getDb();
 
@@ -429,8 +373,7 @@ export function deleteRecipe(id: number): boolean {
  * it from the persisted text, so a reload always agrees with the importer's
  * rules.
  */
-export function loadDraft(id: number): RecipeDraft | null {
-  const db = getDb();
+export function loadDraft(id: number): RecipeDraft | null {  const db = getDb();
   const recipe = db.select().from(recipes).where(eq(recipes.id, id)).get();
   if (!recipe) return null;
   const ings = db
@@ -466,18 +409,4 @@ export function loadDraft(id: number): RecipeDraft | null {
     steps: sts.map((row) => ({ position: row.position, text: row.text })),
     tags: tgs.map((row) => row.label),
   });
-}
-
-export class SaveError extends Error {
-  constructor(
-    public code:
-      | "title-required"
-      | "invalid-category"
-      | "insert-failed"
-      | "not-found"
-      | "bad-draft",
-    message: string,
-  ) {
-    super(message);
-  }
 }
