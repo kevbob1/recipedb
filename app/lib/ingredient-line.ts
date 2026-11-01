@@ -27,6 +27,8 @@
  */
 import { Fraction } from "fraction.js";
 
+import { convertRange, type UnitSystem } from "./unit-convert";
+
 export const QTY_PARSE_STATUSES = [
   "parsed",
   "range",
@@ -449,6 +451,61 @@ function scaleDerived(
 }
 
 /**
+ * Metric rendering: integers when the value is one, otherwise at most two
+ * decimals (the conversion already rounded, this only trims float noise).
+ */
+function formatMetricAmount(value: number): string {
+  return String(Math.round(value * 100) / 100);
+}
+
+/** Amount text for the target system — US keeps the fraction.js path. */
+function formatSystemAmount(value: number, system: UnitSystem): string {
+  return system === "metric" ? formatMetricAmount(value) : formatAmount(value);
+}
+
+interface ConvertedRow extends ScaledQuantity {
+  unit: string;
+}
+
+/**
+ * Scale AND convert one derived line, or null when no conversion applies.
+ *
+ * Conversion runs after scaling (factor first, then the system change), and
+ * only for `parsed`/`range` rows: counts, unknown units and unparseable text
+ * have no same-dimension meaning and must render exactly as they do today.
+ * `convertRange` returning `converted: false` means the unit already belongs to
+ * the target system, so the existing scaled/verbatim path wins.
+ */
+function convertScaledRow(
+  parsed: DerivedQuantity,
+  factor: number,
+  system: UnitSystem,
+): ConvertedRow | null {
+  if (parsed.qtyParseStatus !== "parsed" && parsed.qtyParseStatus !== "range") {
+    return null;
+  }
+  if (parsed.qtyAmount === null) return null;
+  const high = parsed.qtyAmount2 === null ? null : parsed.qtyAmount2 * factor;
+  const converted = convertRange(
+    parsed.qtyAmount * factor,
+    high,
+    parsed.qtyUnitNormalized,
+    system,
+  );
+  if (converted === null || !converted.converted) return null;
+  const low = formatSystemAmount(converted.low, system);
+  return {
+    display:
+      converted.high === null
+        ? low
+        : `${low}\u2013${formatSystemAmount(converted.high, system)}`,
+    scaled: true,
+    mark: null,
+    unit: converted.unit,
+  };
+}
+
+/**
  * Derived scaled view of one line: amount x factor. Never mutates stored text;
  * at 1x the qty is rendered verbatim.
  */
@@ -459,12 +516,17 @@ export function scale(line: IngredientQty, factor: number): ScaledQuantity {
 
 /**
  * The review UI's pure render path: project a whole ingredient list at
- * `factor`. The multiplier buttons only own that one number, so this is what
- * a click on 2× has to reach — the stored `qty` is never rewritten.
+ * `factor`, optionally converting same-dimension units to `system`.
+ *
+ * The multiplier buttons only own `factor` and the toggle only owns `system`,
+ * so this is what a click on 2× or on "metric" has to reach — the stored `qty`
+ * is never rewritten. `system` defaults to "us"; a line already in the target
+ * system (or a count/unparseable line) renders exactly as before.
  */
 export function display(
   lines: readonly ScaledIngredientSource[],
   factor: number,
+  system: UnitSystem = "us",
 ): ScaledIngredientRow[] {
   return lines.map((line) => {
     const parsed = derive(line.qty, line.unit);
@@ -472,9 +534,10 @@ export function display(
       factor === 1
         ? { display: line.qty.trim(), scaled: true, mark: null }
         : scaleDerived(parsed, line.qty, factor);
+    const converted = convertScaledRow(parsed, factor, system);
     return {
-      ...scaled,
-      unit: line.unit ?? parsed.qtyUnitNormalized ?? "",
+      ...(converted ?? scaled),
+      unit: converted?.unit ?? line.unit ?? parsed.qtyUnitNormalized ?? "",
       item: line.item ?? "",
       note: line.note ?? null,
     };

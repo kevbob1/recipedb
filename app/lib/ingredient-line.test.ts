@@ -352,3 +352,86 @@ describe("display — the multiplier view", () => {
     expect(row.unit).toBe("cup");
   });
 });
+
+describe("display — US ⇄ metric conversion", () => {
+  it("defaults to US customary, matching an explicit 'us'", () => {
+    const rows = [{ qty: "1", unit: "cup", item: "milk", note: null }];
+    expect(display(rows, 2)).toEqual(display(rows, 2, "us"));
+    expect(display(rows, 2)[0]).toMatchObject({ display: "2", unit: "cup" });
+  });
+
+  it("scales first, then converts (2 x 1 cup = 473.18 ml)", () => {
+    const rows = display([{ qty: "1", unit: "cup", item: "milk", note: null }], 2, "metric");
+    expect(rows[0]).toMatchObject({ display: "473.18", unit: "ml", scaled: true });
+  });
+
+  it("converts even at 1x, because the system is the only thing changing", () => {
+    expect(display([{ qty: "1", unit: "cup" }], 1, "metric")[0]).toMatchObject({
+      display: "236.59",
+      unit: "ml",
+    });
+    expect(display([{ qty: "1", unit: "lb" }], 1, "metric")[0]).toMatchObject({
+      display: "453.59",
+      unit: "g",
+    });
+    // A unit already in the target system keeps its stored spelling at 1x.
+    expect(display([{ qty: "500", unit: "ml" }], 1, "metric")[0]).toMatchObject({
+      display: "500",
+      unit: "ml",
+    });
+  });
+
+  it("converts both ends of a range to one unit", () => {
+    const row = display([{ qty: "1-2", unit: "cups" }], 1, "metric")[0]!;
+    expect(row.display).toBe("236.59\u2013473.18");
+    expect(row.unit).toBe("ml");
+  });
+
+  it("keeps US fractions through the existing formatAmount path", () => {
+    expect(display([{ qty: "295.735", unit: "ml" }], 1, "us")[0]).toMatchObject({
+      display: "1 1/4",
+      unit: "cup",
+    });
+    expect(display([{ qty: "354.882", unit: "ml" }], 1, "us")[0]).toMatchObject({
+      display: "1 1/2",
+      unit: "cup",
+    });
+    // Below one cup the ladder steps down to spoons (118.294 ml = 8 tbsp).
+    expect(display([{ qty: "118.294", unit: "ml" }], 1, "us")[0]).toMatchObject({
+      display: "8",
+      unit: "tbsp",
+    });
+    // Same-system rows still scale (and phrase) as before.
+    expect(display([{ qty: "1/2", unit: "cup" }], 2, "us")[0]!.display).toBe("1");
+  });
+
+  it("leaves counts, cans, unknown units and unparseable text untouched", () => {
+    const rows = [
+      { qty: "2", unit: null, item: "eggs", note: null },
+      { qty: "1", unit: "can", item: "tomatoes", note: null },
+      { qty: "2", unit: "blorps", item: "mystery", note: null },
+      { qty: "a pinch", unit: null, item: "nutmeg", note: null },
+    ];
+    for (const system of ["us", "metric"] as const) {
+      const out = display(rows, 2, system);
+      // Scaling still applies to counts (2 eggs x2 = 4); conversion does not.
+      expect(out.map((row) => row.display)).toEqual(["4", "2", "4", "a pinch"]);
+      expect(out.map((row) => row.unit)).toEqual(["", "can", "blorps", ""]);
+      expect(out[3]!.scaled).toBe(false);
+      expect(out[3]!.mark).toBe("scaling not applied");
+    }
+  });
+
+  it("never mutates the input lines", () => {
+    const rows = [
+      { qty: "1", unit: "cup", item: "milk", note: null },
+      { qty: "1/2-3/4", unit: "tbsp", item: "vanilla", note: "good stuff" },
+      { qty: "a pinch", unit: null, item: "salt", note: null },
+    ];
+    const before = JSON.stringify(rows);
+    display(rows, 2, "metric");
+    display(rows, 2, "us");
+    expect(JSON.stringify(rows)).toBe(before);
+  });
+});
+

@@ -334,6 +334,11 @@ export function ScaledIngredientList({
 }) {
   const [factor, setFactor] = useState<number>(1);
   const [custom, setCustom] = useState("");
+  /**
+   * US ⇄ metric is a render-time choice only (ADR-0003 §A): per-visit default,
+   * no persistence, no URL state. It never touches the saved quantities.
+   */
+  const [system, setSystem] = useState<"us" | "metric">("us");
 
   function onCustom(value: string) {
     setCustom(value);
@@ -348,6 +353,30 @@ export function ScaledIngredientList({
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <strong style={{ fontSize: 13 }}>Scaled view</strong>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <div
+            role="group"
+            aria-label="unit system"
+            style={{ display: "flex", gap: 6, alignItems: "center", marginRight: 4 }}
+          >
+            {(["us", "metric"] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={system === option}
+                onClick={() => setSystem(option)}
+                style={{
+                  ...ghostBtn,
+                  padding: "4px 10px",
+                  fontSize: 12,
+                  background: system === option ? "#f6e1d8" : "#fff",
+                  borderColor: system === option ? "#b04a2f" : "#c9c1b1",
+                  color: system === option ? "#b04a2f" : "inherit",
+                }}
+              >
+                {option === "us" ? "US" : "metric"}
+              </button>
+            ))}
+          </div>
           {MULTIPLIER_PRESETS.map((f) => (
             <button
               key={f}
@@ -386,7 +415,7 @@ export function ScaledIngredientList({
         <p style={{ color: "#6b655c", fontSize: 13 }}>Nothing to scale yet.</p>
       ) : (
         <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-          {display(ingredients, factor).map((row, i) => (
+          {display(ingredients, factor, system).map((row, i) => (
             <li
               key={i}
               style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "4px 0", fontSize: 14, borderTop: i === 0 ? "none" : "1px solid #ece8de" }}
