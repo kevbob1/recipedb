@@ -1,138 +1,140 @@
 /**
- * HTTP transport for saving a draft (#28 multipart upload included).
+ * HTTP parsing for POST /api/save-draft.
+ *
+ * This module decodes bodies only (JSON or multipart, new or existing, with or
+ * without the original capture). It makes no persistence decision and never
+ * touches the database — the route dispatches to the store seam, and
+ * app/lib/draft-store.server.ts owns everything that follows.
  *
  * Lives outside the route module because React Router strips server code only
  * from route exports (loader/action/...); a helper exported from the route
- * would be pulled into the client bundle and drag `auth.server` with it.
+ * would be pulled into the client bundle.
  */
-import {
-  decodeDraftPayload,
-  deleteRecipe,
-  saveDraft,
-  SaveError,
-} from "./draft-store.server";
 import type { RecipeDraft } from "./draft";
-import { requireAuth } from "./auth.server";
-import {
-  MAX_SCAN_UPLOAD_BYTES,
-  ScanImageError,
-  attachImageFilename,
-  saveOriginalScanImage,
-  validateScanUpload,
-} from "./scan/index.server";
+import { decodeDraftPayload } from "./draft-store.server";
+import { MAX_SCAN_UPLOAD_BYTES } from "./scan/index.server";
 
-function scanErrorResponse(err: ScanImageError): Response {
-  const status =
-    err.code === "image-too-large"
-      ? 413
-      : err.code === "image-write-failed"
-        ? 500
-        : 400;
-  return Response.json({ error: err.code, message: err.message }, { status });
+/** What a save request asks the store to do. */
+export interface ParsedSaveRequest {
+  /** Null only for a delete intent, which carries no draft. */
+  draft: RecipeDraft | null;
+  imageBytes: Buffer | null;
+  /** Present when revising (or deleting) an already-stored recipe. */
+  recipeId: number | null;
+  intent: "delete" | null;
+}
+
+export type ParseSaveResult = ParsedSaveRequest | { error: Response };
+
+function badRequest(error: string, message?: string): { error: Response } {
+  return {
+    error: Response.json(message ? { error, message } : { error }, { status: 400 }),
+  };
+}
+
+function readRecipeId(value: unknown): number | null | undefined {
+  if (value === null || value === undefined || value === "") return null;
+  const id = typeof value === "number" ? value : Number(value);
+  return Number.isInteger(id) && id > 0 ? id : undefined;
+}
+
+function readIntent(value: unknown): "delete" | null {
+  return value === "delete" ? "delete" : null;
 }
 
 /**
- * Read the draft and (optionally) the original capture from either transport.
+ * Read the draft, optional capture, and routing fields from either transport.
  * Returns a Response for malformed input so the caller can early-return.
+ *
+ * Accepted shapes:
+ *  - JSON `{ draft, recipeId?, intent? }` (and the legacy bare draft)
+ *  - multipart `draft`, `image?`, `recipeId?`, `intent?`
  */
-async function parseSaveBody(
-  request: Request,
-): Promise<
-  | { draft: RecipeDraft; imageBytes: Buffer | null }
-  | { error: Response }
-> {
+export async function parseSaveBody(request: Request): Promise<ParseSaveResult> {
   const contentType = (request.headers.get("content-type") ?? "").toLowerCase();
-
   if (contentType.includes("multipart/form-data")) {
-    let form: FormData;
-    try {
-      form = await request.formData();
-    } catch {
-      return { error: Response.json({ error: "bad-form" }, { status: 400 }) };
-    }
-    const raw = form.get("draft");
-    if (typeof raw !== "string" || raw.length === 0) {
-      return {
-        error: Response.json({ error: "missing-draft" }, { status: 400 }),
-      };
-    }
-    let draft: RecipeDraft;
-    try {
-      draft = decodeDraftPayload(raw);
-    } catch {
-      return { error: Response.json({ error: "bad-json" }, { status: 400 }) };
-    }
-
-    const file = form.get("image");
-    if (file === null) return { draft, imageBytes: null };
-    if (typeof file === "string") {
-      return {
-        error: Response.json({ error: "bad-image" }, { status: 400 }),
-      };
-    }
-    // Cheap pre-check before buffering; the definitive check is on the bytes.
-    if (file.size > MAX_SCAN_UPLOAD_BYTES) {
-      return {
-        error: Response.json(
-          {
-            error: "image-too-large",
-            message: `Images must be ${MAX_SCAN_UPLOAD_BYTES / (1024 * 1024)}MB or smaller.`,
-          },
-          { status: 413 },
-        ),
-      };
-    }
-    return { draft, imageBytes: Buffer.from(await file.arrayBuffer()) };
+    return parseMultipartBody(request);
   }
-
-  try {
-    const draft = decodeDraftPayload(await request.json());
-    return { draft, imageBytes: null };
-  } catch {
-    return { error: Response.json({ error: "bad-json" }, { status: 400 }) };
-  }
+  return parseJsonBody(request);
 }
 
-/** Handle POST /api/save-draft (JSON or multipart). */
-export async function handleSaveDraftRequest(request: Request): Promise<Response> {
-  // Auth gate: this is the write path, gate before any DB work.
-  requireAuth(request, { isApi: true });
-  if (request.method !== "POST") {
-    return Response.json({ error: "method-not-allowed" }, { status: 405 });
-  }
-
-  const parsed = await parseSaveBody(request);
-  if ("error" in parsed) return parsed.error;
-  const { draft, imageBytes } = parsed;
-
-  if (imageBytes) {
-    try {
-      validateScanUpload(imageBytes);
-    } catch (err) {
-      if (err instanceof ScanImageError) return scanErrorResponse(err);
-      throw err;
-    }
-  }
-
-  let recipeId: number | null = null;
+async function parseJsonBody(request: Request): Promise<ParseSaveResult> {
+  let payload: unknown;
   try {
-    const result = saveDraft(draft);
-    recipeId = result.recipeId;
-    if (imageBytes) {
-      const filename = saveOriginalScanImage(result.recipeId, imageBytes);
-      attachImageFilename(result.recipeId, filename);
-    }
-    return Response.json(result);
-  } catch (err) {
-    // Never leave a recipe behind when its capture could not be stored.
-    if (recipeId !== null && err instanceof ScanImageError) {
-      deleteRecipe(recipeId);
-      return scanErrorResponse(err);
-    }
-    if (err instanceof SaveError) {
-      return Response.json({ error: err.code, message: err.message }, { status: 400 });
-    }
-    console.error("[api.save-draft] unexpected error", err);
-    return Response.json({ error: "internal" }, { status: 500 });
+    payload = await request.json();
+  } catch {
+    return badRequest("bad-json");
   }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return badRequest("bad-json");
+  }
+
+  const body = payload as Record<string, unknown>;
+  const wrapper = "draft" in body || "recipeId" in body || "intent" in body;
+  const recipeId = readRecipeId(body.recipeId);
+  if (recipeId === undefined) return badRequest("bad-recipe-id");
+  const intent = readIntent(body.intent);
+
+  if (!wrapper) {
+    // Legacy shape: the JSON body *is* the draft.
+    return { draft: decodeDraftPayload(payload), imageBytes: null, recipeId, intent };
+  }
+
+  let draft: RecipeDraft | null = null;
+  if (body.draft !== null && body.draft !== undefined) {
+    try {
+      draft = decodeDraftPayload(body.draft);
+    } catch {
+      return badRequest("bad-json");
+    }
+  }
+  if (!draft && intent !== "delete") return badRequest("missing-draft");
+
+  return { draft, imageBytes: null, recipeId, intent };
+}
+
+async function parseMultipartBody(request: Request): Promise<ParseSaveResult> {
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return badRequest("bad-form");
+  }
+
+  const recipeId = readRecipeId(form.get("recipeId"));
+  if (recipeId === undefined) return badRequest("bad-recipe-id");
+  const intent = readIntent(form.get("intent"));
+
+  const rawDraft = form.get("draft");
+  let draft: RecipeDraft | null = null;
+  if (typeof rawDraft === "string" && rawDraft.length > 0) {
+    try {
+      draft = decodeDraftPayload(rawDraft);
+    } catch {
+      return badRequest("bad-json");
+    }
+  }
+  if (!draft && intent !== "delete") return badRequest("missing-draft");
+
+  const file = form.get("image");
+  if (file === null) return { draft, imageBytes: null, recipeId, intent };
+  if (typeof file === "string") return badRequest("bad-image");
+  // Cheap pre-check before buffering; the definitive check is on the bytes.
+  if (file.size > MAX_SCAN_UPLOAD_BYTES) {
+    return {
+      error: Response.json(
+        {
+          error: "image-too-large",
+          message: `Images must be ${MAX_SCAN_UPLOAD_BYTES / (1024 * 1024)}MB or smaller.`,
+        },
+        { status: 413 },
+      ),
+    };
+  }
+  return {
+    draft,
+    imageBytes: Buffer.from(await file.arrayBuffer()),
+    recipeId,
+    intent,
+  };
 }

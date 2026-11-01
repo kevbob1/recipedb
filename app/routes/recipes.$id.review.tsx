@@ -9,7 +9,7 @@
  * URL, photo, and manual entries all share one review surface.
  */
 import { useState } from "react";
-import { Link, useSearchParams, redirect } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import type { Route } from "./+types/recipes.$id.review";
 import { ReviewEditor } from "./review-editor";
 import {
@@ -18,13 +18,8 @@ import {
   type RecipeDraft,
   countNeedEyes,
 } from "../lib/draft";
-import {
-  decodeDraftPayload,
-  deleteRecipe,
-  loadDraft,
-  updateDraft,
-  SaveError,
-} from "../lib/draft-store.server";
+import { loadDraft } from "../lib/draft-store.server";
+import { useSaveDraft } from "../lib/use-save-draft";
 import { requireAuth } from "../lib/auth.server";
 
 export function meta({ data }: Route.MetaArgs) {
@@ -45,46 +40,18 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   return { draft, recipeId: id };
 }
 
-export async function action({ request, params }: Route.ActionArgs) {
-  requireAuth(request, { isApi: true });
-  const id = Number(params.id);
-  if (!Number.isInteger(id) || id <= 0) {
-    return Response.json({ ok: false, error: "bad-id" }, { status: 400 });
-  }
-  const form = await request.formData();
-
-  if (String(form.get("intent") ?? "") === "delete") {
-    if (!deleteRecipe(id)) {
-      return Response.json({ ok: false, error: "not-found" }, { status: 404 });
-    }
-    return redirect("/");
-  }
-
-  const raw = String(form.get("draft") ?? "");
-  if (!raw) {
-    return Response.json({ ok: false, error: "empty-draft" }, { status: 400 });
-  }
-  try {
-    // Revise the row we loaded: the review screen edits one stored recipe.
-    // The seam decodes the payload; the route never maps fields by hand.
-    updateDraft(id, decodeDraftPayload(raw));
-    return redirect(`/recipes/${id}/review?saved=1`);
-  } catch (err) {
-    if (err instanceof SaveError) {
-      const status = err.code === "not-found" ? 404 : 400;
-      return Response.json({ ok: false, error: err.code, message: err.message }, { status });
-    }
-    return Response.json({ ok: false, error: "internal" }, { status: 500 });
-  }
-}
-
 export default function ReviewRoute({ loaderData }: Route.ComponentProps) {
   const initial = loaderData.draft;
   const [draft, setDraft] = useState<RecipeDraft>(initial);
   const [params] = useSearchParams();
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(params.get("saved") === "1");
+  // The save seam owns the endpoint, the busy flag, and the error message.
+  const {
+    save: saveDraft,
+    remove: removeDraft,
+    saving,
+    error,
+  } = useSaveDraft({ recipeId: loaderData.recipeId });
 
   const need = countNeedEyes(draft);
 
@@ -109,30 +76,11 @@ export default function ReviewRoute({ loaderData }: Route.ComponentProps) {
       : undefined;
 
   async function save() {
-    setSaving(true);
-    setError(null);
     try {
-      const res = await fetch(`/recipes/${loaderData.recipeId}/review`, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ draft: JSON.stringify(draft) }),
-      });
-      if (res.redirected) {
-        setSaved(true);
-        return;
-      }
-      if (!res.ok) {
-        const json = (await res.json().catch(() => null)) as
-          | { error?: string; message?: string }
-          | null;
-        setError(json?.message ?? json?.error ?? "Couldn't save.");
-        return;
-      }
+      await saveDraft(draft);
       setSaved(true);
-    } catch (err) {
-      setError((err as Error).message ?? "Couldn't save.");
-    } finally {
-      setSaving(false);
+    } catch {
+      // Message already lives in the hook's error state.
     }
   }
 
@@ -144,26 +92,11 @@ export default function ReviewRoute({ loaderData }: Route.ComponentProps) {
     ) {
       return;
     }
-    setSaving(true);
-    setError(null);
     try {
-      const res = await fetch(`/recipes/${loaderData.recipeId}/review`, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ intent: "delete" }),
-      });
-      if (!res.ok && !res.redirected) {
-        const json = (await res.json().catch(() => null)) as
-          | { error?: string; message?: string }
-          | null;
-        setError(json?.message ?? json?.error ?? "Couldn't delete.");
-        return;
-      }
+      await removeDraft();
       window.location.assign("/");
-    } catch (err) {
-      setError((err as Error).message ?? "Couldn't delete.");
-    } finally {
-      setSaving(false);
+    } catch {
+      // Message already lives in the hook's error state.
     }
   }
 

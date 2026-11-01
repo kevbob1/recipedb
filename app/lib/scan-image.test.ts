@@ -42,7 +42,12 @@ import {
   validateScanUpload,
 } from "./scan/index.server";
 import { buildSessionCookie } from "./session.server";
-import { handleSaveDraftRequest } from "./save-draft-http.server";
+import { action as saveDraftAction } from "../routes/api.save-draft";
+import type { Route } from "../routes/+types/api.save-draft";
+
+/** Drive the real route action; parsing/dispatch live below it now. */
+const handleSaveDraftRequest = (request: Request) =>
+  saveDraftAction({ request } as unknown as Route.ActionArgs);
 
 let tmpDir: string;
 let originalDataDir: string | undefined;

@@ -54,7 +54,13 @@ import {
 } from "./draft";
 import { normalizeTag, trimOnly, trimOnlyRequired } from "./normalize";
 import { fromText } from "./ingredient-line";
-import { deleteRecipeImage } from "./scan/index.server";
+import {
+  ScanImageError,
+  attachImageFilename,
+  deleteRecipeImage,
+  saveOriginalScanImage,
+  validateScanUpload,
+} from "./scan/index.server";
 
 export interface SaveDraftResult {
   recipeId: number;
@@ -258,14 +264,25 @@ function deleteChildren(recipeId: number): void {
 }
 
 /**
- * Persist a draft. Throws on validation failure (missing title, unknown
- * category). Returns the new recipe id.
+ * Persist a NEW draft, optionally attaching the original scan capture.
+ *
+ * The capture is part of the same unit of work as the recipe: bytes are
+ * validated before any write, then written and linked inside the transaction.
+ * A capture that cannot be stored rolls the recipe back and cleans up the
+ * directory it may have created, so no caller ever has to sequence "insert,
+ * then attach, then maybe delete the leftover".
  *
  * The caller is responsible for setting isDraft = true; we never publish
  * silently. (`publish: true` is not part of the MVP — see ticket #11.)
  */
-export function saveDraft(draft: RecipeDraft): SaveDraftResult {
+export function saveNewDraft(
+  draft: RecipeDraft,
+  imageBytes?: Buffer | null,
+): SaveDraftResult {
   const prepared = prepareDraft(draft);
+  // Validate before touching storage: a bad capture cannot create a recipe.
+  if (imageBytes) validateScanUpload(imageBytes);
+
   const now = new Date();
   const baseRecipe: NewRecipe = {
     ...prepared.fields,
@@ -285,22 +302,81 @@ export function saveDraft(draft: RecipeDraft): SaveDraftResult {
     if (!inserted) throw new SaveError("insert-failed", "Recipe insert failed.");
     recipeId = inserted.id;
     insertChildren(recipeId, prepared);
+    if (imageBytes) {
+      const filename = saveOriginalScanImage(recipeId, imageBytes);
+      attachImageFilename(recipeId, filename);
+    }
   });
-  run();
+
+  try {
+    run();
+  } catch (err) {
+    // The transaction rolled the row back; remove any capture directory the
+    // failed attach managed to create before the error surfaced (#28).
+    if (recipeId !== 0 && err instanceof ScanImageError) deleteRecipeImage(recipeId);
+    throw err;
+  }
 
   return { recipeId, isDraft: true };
 }
 
+/** Back-compat alias for the no-image save path. Prefer saveNewDraft. */
+export function saveDraft(draft: RecipeDraft): SaveDraftResult {
+  return saveNewDraft(draft);
+}
+
+/** Options for saving over an existing recipe. */
+export interface SaveExistingDraftOptions {
+  /**
+   * The review screen's delete intent: remove the stored recipe (and its
+   * capture) instead of revising it.
+   */
+  delete?: boolean;
+}
+
+/** Result of an existing-recipe save that removed the row. */
+export interface DeleteDraftResult {
+  recipeId: number;
+  deleted: true;
+}
+
+/**
+ * Persist the review screen's state for an EXISTING recipe, or act on its
+ * delete intent.
+ *
+ * `delete: true` removes the row (child rows via CASCADE, capture via the Scan
+ * module) and returns `{ deleted: true }`; `draft` is ignored in that case.
+ * Otherwise the draft is validated and written exactly like saveNewDraft.
+ */
+export function saveExistingDraft(
+  id: number,
+  draft: RecipeDraft | null,
+  opts: SaveExistingDraftOptions = {},
+): SaveDraftResult | DeleteDraftResult {
+  if (opts.delete) {
+    if (!deleteRecipe(id)) {
+      throw new SaveError("not-found", `Recipe #${id} was not found.`);
+    }
+    return { recipeId: id, deleted: true };
+  }
+  if (!draft) {
+    throw new SaveError("bad-draft", "A draft is required to save a recipe.");
+  }
+  return reviseDraft(id, draft);
+}
+
+/** Back-compat alias for the revise path. Prefer saveExistingDraft. */
+export function updateDraft(id: number, draft: RecipeDraft): SaveDraftResult {
+  return reviseDraft(id, draft);
+}
+
 /**
  * Revise an existing recipe in place. Same validation and normalization as
- * saveDraft; replaces title/provenance fields and rewrites all child rows
+ * saveNewDraft; replaces title/provenance fields and rewrites all child rows
  * (ingredient lines, steps, tags) inside one transaction. Throws SaveError
  * with code "not-found" when no recipe has that id.
- *
- * The row keeps its id, createdAt, and isDraft flag: an edit revises the
- * stored recipe, it never creates a second one or changes its publish state.
  */
-export function updateDraft(id: number, draft: RecipeDraft): SaveDraftResult {
+function reviseDraft(id: number, draft: RecipeDraft): SaveDraftResult {
   const prepared = prepareDraft(draft);
   const now = new Date();
   const db = getDb();

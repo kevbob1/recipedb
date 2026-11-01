@@ -31,7 +31,7 @@ import {
 } from "../lib/draft";
 import { recognizeText } from "../lib/ocr";
 import { createDraft, requestUrlImport } from "../lib/import";
-import { submitDraft } from "../lib/save-transport";
+import { useSaveDraft } from "../lib/use-save-draft";
 import { MAX_SCAN_UPLOAD_BYTES, MAX_SCAN_UPLOAD_MB } from "../lib/scan/limits";
 import { ReviewEditor, inputStyle, primaryBtn, ghostBtn } from "./review-editor";
 import { requireAuth } from "../lib/auth.server";
@@ -73,6 +73,13 @@ function StepperShell() {
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [savedRecipeId, setSavedRecipeId] = useState<number | null>(null);
   const [submitInFlight, setSubmitInFlight] = useState(false);
+  // The save seam owns JSON-vs-multipart and the busy/error state for it.
+  const {
+    save: saveToServer,
+    saving,
+    error: saveError,
+    clearError: clearSaveError,
+  } = useSaveDraft();
 
   const stepLabels = ["1 · Add", "2 · Get it", "3 · Review", "4 · Saved"];
 
@@ -81,6 +88,7 @@ function StepperShell() {
   function pickEntry(e: Entry) {
     setEntry(e);
     setError(null);
+    clearSaveError();
     // Clear the previous run. Provenance is stamped by the adapter that
     // actually produces the next draft (manual here; url/scan once their
     // import succeeds), never by the route.
@@ -134,16 +142,13 @@ function StepperShell() {
 
   async function save() {
     setError(null);
-    setSubmitInFlight(true);
     try {
-      // The save transport decides JSON vs multipart (a retained scan rides
-      // along as the untouched bytes) and maps a failed response to a message.
-      setSavedRecipeId(await submitDraft(draft, photoFile));
+      // The hook decides JSON vs multipart (a retained scan rides along as the
+      // untouched bytes) and surfaces a failed save through its own error.
+      setSavedRecipeId(await saveToServer(draft, photoFile));
       setStep(4);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't save.");
-    } finally {
-      setSubmitInFlight(false);
+    } catch {
+      // Message already lives in the hook's error state.
     }
   }
 
@@ -153,6 +158,7 @@ function StepperShell() {
     setDraft(createDraft({ kind: "manual" }));
     setUrlInput("");
     setError(null);
+    clearSaveError();
     setPhotoState("idle");
     setPhotoFile(null);
     setSavedRecipeId(null);
@@ -186,10 +192,10 @@ function StepperShell() {
         <Step3Review
           draft={draft}
           setDraft={setDraft}
-          error={error}
+          error={error ?? saveError}
           onBack={() => setStep(2)}
           onSave={save}
-          saving={submitInFlight}
+          saving={saving}
           onReOcr={photoFile ? () => recognizeText(photoFile) : undefined}
         />
       ) : null}
