@@ -268,3 +268,63 @@ describe("suggestTags", () => {
     expect(suggestTags("   ")).toEqual([]);
   });
 });
+
+describe("listRecipes (cook-now chips)", () => {
+  it("leaves browse order and hits untouched when no chips are active", () => {
+    const { hits } = listRecipes({});
+    expect(hits.map((h) => h.title)).toEqual([
+      "Oatmeal Cookies",
+      "Tomato Basil Soup",
+      "Sourdough Pancakes",
+    ]);
+    expect(hits.every((h) => h.missingCount === undefined)).toBe(true);
+    expect(hits.every((h) => h.missingItems === undefined)).toBe(true);
+  });
+
+  it("ranks by fewest missing lines while keeping every recipe", () => {
+    // Oats chip: cookies miss nothing (butter is a staple); bread misses
+    // nothing either ("buttermilk" contains the "milk" staple — the documented
+    // false-friend case); soup misses tomatoes + basil.
+    const { hits, total, mode } = listRecipes({ cook: "oats" });
+    expect(mode).toBe("browse");
+    expect(total).toBe(3);
+    expect(hits.map((h) => h.title)).toEqual([
+      "Oatmeal Cookies",
+      "Sourdough Pancakes",
+      "Tomato Basil Soup",
+    ]);
+    expect(hits.map((h) => h.missingCount)).toEqual([0, 0, 2]);
+    expect(hits[2]?.missingItems).toEqual(["tomatoes", "basil"]);
+    expect(hits[0]?.missingItems).toEqual([]);
+  });
+
+  it("composes with the category filter before ranking", () => {
+    const { hits, total } = listRecipes({ cook: "oats", category: "soup" });
+    expect(total).toBe(1);
+    expect(hits.map((h) => h.title)).toEqual(["Tomato Basil Soup"]);
+    expect(hits[0]?.missingCount).toBe(2);
+  });
+
+  it("composes with favoriteOnly", () => {
+    const { hits } = listRecipes({ cook: "oats", favoriteOnly: true });
+    expect(hits.map((h) => h.title)).toEqual([
+      "Oatmeal Cookies",
+      "Sourdough Pancakes",
+    ]);
+    expect(hits.some((h) => h.title === "Tomato Basil Soup")).toBe(false);
+  });
+
+  it("ranks search results too (bm25 order is the tie-breaker)", () => {
+    const { hits, mode } = listRecipes({ query: "soup", cook: "basil" });
+    expect(mode).toBe("search");
+    expect(hits.map((h) => h.title)).toEqual(["Tomato Basil Soup"]);
+    expect(hits[0]?.missingCount).toBe(1);
+    expect(hits[0]?.missingItems).toEqual(["tomatoes"]);
+  });
+
+  it("treats chips case-insensitively and ignores blanks", () => {
+    const { hits } = listRecipes({ cook: " OATS ,, " });
+    expect(hits[0]?.title).toBe("Oatmeal Cookies");
+    expect(hits[0]?.missingCount).toBe(0);
+  });
+});

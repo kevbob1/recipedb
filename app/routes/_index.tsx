@@ -28,6 +28,7 @@ import {
   suggestTags,
   type SearchHit,
 } from "../lib/search.server";
+import { parseChips, serializeChips, summarizeMissing } from "../lib/cook-now";
 import { requireAuth } from "../lib/auth.server";
 
 export function meta(_args: Route.MetaArgs) {
@@ -51,6 +52,9 @@ export async function loader({ request }: Route.LoaderArgs) {
   const tag = sp.get("tag") ?? "";
   const favoriteOnly = sp.get("fav") === "1";
   const ingredientInclude = sp.get("ing") ?? "";
+  // "What can I cook?" chips (ADR-0003 §B). Comma-separated in the URL so the
+  // state stays shareable and SSR remains the source of truth.
+  const cook = sp.get("cook") ?? "";
   // Autocomplete is best-effort and cheap. Empty query → no call.
   const acPrefix = sp.get("ac") ?? "";
 
@@ -61,6 +65,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       tag: tag || null,
       favoriteOnly: favoriteOnly || null,
       ingredientInclude: ingredientInclude || null,
+      cook: cook || null,
     },
     { limit: 50 },
   );
@@ -74,6 +79,8 @@ export async function loader({ request }: Route.LoaderArgs) {
     tag,
     favoriteOnly,
     ingredientInclude,
+    cook,
+    chips: parseChips(cook),
     result,
     counts,
     tagSuggestions,
@@ -87,6 +94,7 @@ export default function Index({ loaderData }: Route.ComponentProps) {
     tag,
     favoriteOnly,
     ingredientInclude,
+    chips,
     result,
     counts,
     tagSuggestions,
@@ -107,6 +115,16 @@ export default function Index({ loaderData }: Route.ComponentProps) {
   useEffect(() => {
     setTagDraft(tag);
   }, [tag]);
+
+  // Chips live in the URL like every other filter; SSR still decides the
+  // ranking, this only writes the `cook` param.
+  const setChips = (next: string[]) => {
+    const nextParams = new URLSearchParams(params);
+    const serialized = serializeChips(next);
+    if (serialized) nextParams.set("cook", serialized);
+    else nextParams.delete("cook");
+    submit(nextParams, { method: "get", replace: true });
+  };
 
   return (
     <main style={shellStyle}>
@@ -212,6 +230,12 @@ export default function Index({ loaderData }: Route.ComponentProps) {
         </div>
       </Form>
 
+      <CookNowFilter
+        chips={chips}
+        onAdd={(term) => setChips([...chips, term])}
+        onRemove={(term) => setChips(chips.filter((c) => c !== term))}
+      />
+
       <header style={{ marginTop: 16 }}>
         <h1 style={{ margin: 0, fontSize: "1.25rem" }}>
           {isBrowse ? "Your recipes" : "Search results"}
@@ -220,6 +244,7 @@ export default function Index({ loaderData }: Route.ComponentProps) {
           {isBrowse
             ? `${result.total} recipe${result.total === 1 ? "" : "s"}`
             : `${result.total} match${result.total === 1 ? "" : "es"} for “${query}”`}
+          {chips.length > 0 ? " · ranked by fewest missing ingredients" : ""}
           {" · "}
           <Link to="/add" style={{ color: "#b04a2f" }}>+ Add a recipe</Link>
         </p>
@@ -243,7 +268,8 @@ export default function Index({ loaderData }: Route.ComponentProps) {
           <EmptyState
             isSearch={!isBrowse}
             hasFilters={
-              Boolean(category || tag || favoriteOnly || ingredientInclude)
+              Boolean(category || tag || favoriteOnly || ingredientInclude) ||
+              chips.length > 0
             }
           />
         ) : (
@@ -332,6 +358,70 @@ function StickySearch(props: {
   );
 }
 
+function CookNowFilter(props: {
+  chips: string[];
+  onAdd: (term: string) => void;
+  onRemove: (term: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const add = () => {
+    const term = draft.trim();
+    if (!term) return;
+    props.onAdd(term);
+    setDraft("");
+  };
+
+  return (
+    <section aria-label="What can I cook" style={cookNowStyle}>
+      <span style={cookNowLabelStyle}>What can I cook?</span>
+      <div style={chipInputRowStyle}>
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter adds a chip instead of submitting the surrounding page.
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add();
+            }
+          }}
+          placeholder="e.g. chicken, rice"
+          autoComplete="off"
+          enterKeyHint="done"
+          style={chipInputStyle}
+          aria-label="Add an ingredient you have"
+        />
+        <button type="button" onClick={add} style={chipAddBtnStyle}>
+          Add
+        </button>
+      </div>
+      {props.chips.length > 0 ? (
+        <ul style={chipListStyle}>
+          {props.chips.map((chip) => (
+            <li key={chip} style={chipStyle}>
+              <span>{chip}</span>
+              <button
+                type="button"
+                onClick={() => props.onRemove(chip)}
+                style={chipRemoveBtnStyle}
+                aria-label={`Remove ${chip}`}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p style={chipHintStyle}>
+          Add the ingredients you have — every recipe stays listed, sorted by
+          fewest missing.
+        </p>
+      )}
+    </section>
+  );
+}
+
 function CategoryGrid(props: {
   counts: { category: Category; count: number }[];
   activeCategory: Category | "";
@@ -383,6 +473,14 @@ function CategoryGrid(props: {
 }
 
 function RecipeRow({ hit }: { hit: SearchHit }) {
+  const ranked = typeof hit.missingCount === "number";
+  const missingItems = hit.missingItems ?? [];
+  const summary = summarizeMissing(missingItems, 3);
+  const missingText =
+    summary.more > 0
+      ? `${summary.shown.join(", ")} +${summary.more} more`
+      : summary.shown.join(", ");
+
   return (
     <li>
       <Link
@@ -390,7 +488,7 @@ function RecipeRow({ hit }: { hit: SearchHit }) {
         style={rowLinkStyle}
         aria-label={`${hit.title}, category ${hit.category}${
           hit.favorite ? ", favorite" : ""
-        }`}
+        }${ranked ? `, missing ${hit.missingCount} ingredients` : ""}`}
       >
         <span style={{ display: "grid", gap: 2, flex: 1, minWidth: 0 }}>
           <span style={rowTitleStyle}>
@@ -400,7 +498,22 @@ function RecipeRow({ hit }: { hit: SearchHit }) {
             {hit.title}
           </span>
           <span style={rowMetaStyle}>{hit.category}</span>
+          {ranked ? (
+            <span style={rowMissingStyle}>
+              {hit.missingCount === 0 ? "nothing missing" : missingText}
+            </span>
+          ) : null}
         </span>
+        {ranked ? (
+          <span
+            style={{
+              ...missingBadgeStyle,
+              ...(hit.missingCount === 0 ? readyBadgeStyle : null),
+            }}
+          >
+            missing {hit.missingCount}
+          </span>
+        ) : null}
         <span aria-hidden style={{ color: "#c9c1b1" }}>›</span>
       </Link>
     </li>
@@ -541,6 +654,93 @@ const suggestBtnStyle: React.CSSProperties = {
   color: "inherit",
 };
 
+const cookNowStyle: React.CSSProperties = {
+  display: "grid",
+  gap: 6,
+  marginTop: 12,
+  padding: "10px 12px",
+  border: "1px solid #e3ddd2",
+  borderRadius: 12,
+  background: "#fff",
+};
+
+const cookNowLabelStyle: React.CSSProperties = {
+  fontSize: 12,
+  color: "#6b655c",
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
+};
+
+const chipInputRowStyle: React.CSSProperties = {
+  display: "flex",
+  gap: 8,
+};
+
+const chipInputStyle: React.CSSProperties = {
+  flex: 1,
+  minHeight: 40,
+  padding: "8px 10px",
+  borderRadius: 10,
+  border: "1px solid #c9c1b1",
+  background: "#fff",
+  fontSize: 15,
+  color: "#1f1d1a",
+  font: "inherit",
+};
+
+const chipAddBtnStyle: React.CSSProperties = {
+  appearance: "none",
+  border: "1px solid #b04a2f",
+  background: "#fdf1ec",
+  color: "#b04a2f",
+  borderRadius: 10,
+  padding: "8px 14px",
+  fontSize: 14,
+  fontWeight: 600,
+  cursor: "pointer",
+  font: "inherit",
+};
+
+const chipListStyle: React.CSSProperties = {
+  listStyle: "none",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 6,
+  margin: 0,
+  padding: 0,
+};
+
+const chipStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+  padding: "4px 6px 4px 10px",
+  borderRadius: 999,
+  border: "1px solid #b04a2f",
+  background: "#fdf1ec",
+  color: "#b04a2f",
+  fontSize: 13,
+  textTransform: "lowercase",
+};
+
+const chipRemoveBtnStyle: React.CSSProperties = {
+  appearance: "none",
+  border: "none",
+  background: "transparent",
+  color: "#b04a2f",
+  fontSize: 16,
+  lineHeight: 1,
+  padding: "0 4px",
+  cursor: "pointer",
+  font: "inherit",
+};
+
+const chipHintStyle: React.CSSProperties = {
+  margin: 0,
+  color: "#6b655c",
+  fontSize: 12,
+};
+
 const listStyle: React.CSSProperties = {
   listStyle: "none",
   padding: 0,
@@ -574,6 +774,30 @@ const rowMetaStyle: React.CSSProperties = {
   fontSize: 12,
   color: "#6b655c",
   textTransform: "lowercase",
+};
+
+const rowMissingStyle: React.CSSProperties = {
+  fontSize: 12,
+  color: "#8a6a4a",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
+
+const missingBadgeStyle: React.CSSProperties = {
+  flexShrink: 0,
+  padding: "3px 8px",
+  borderRadius: 999,
+  background: "#fdf1ec",
+  color: "#b04a2f",
+  fontSize: 12,
+  fontWeight: 600,
+  whiteSpace: "nowrap",
+};
+
+const readyBadgeStyle: React.CSSProperties = {
+  background: "#eef7ee",
+  color: "#3f7a3f",
 };
 
 const categoryCardStyle: React.CSSProperties = {

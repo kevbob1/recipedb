@@ -19,6 +19,9 @@
  *   - tag             exact match on tags.label (already lower-cased)
  *   - favoriteOnly    recipes.favorite = 1
  *   - ingredientInclude   case-insensitive substring on ingredient_lines.item
+ *   - cook            "What can I cook?" chips (ADR-0003 §B): filter first,
+ *                     then rank rows by fewest missing ingredient lines. No
+ *                     recipe is excluded — only re-ordered.
  *
  * Phone-friendly ergonomics live in the route; this module returns rows and
  * counts and is safe to unit-test in isolation.
@@ -31,6 +34,7 @@ import {
   recipes,
   tags,
 } from "../db/schema.server";
+import { parseChips, rankByMissing } from "./cook-now";
 
 export type { Category };
 export { CATEGORIES };
@@ -47,6 +51,12 @@ export interface SearchInput {
   favoriteOnly?: boolean | null;
   /** Case-insensitive substring match on any ingredient item. */
   ingredientInclude?: string | null;
+  /**
+   * "What can I cook?" chips, comma-separated (`cook` URL param). When
+   * present, recipes are ranked by fewest missing ingredient lines; nobody is
+   * filtered out.
+   */
+  cook?: string | null;
 }
 
 /** A row in the home list. Trimmed to what the UI needs. */
@@ -57,6 +67,13 @@ export interface SearchHit {
   favorite: boolean;
   /** ms-since-epoch; used for "recent" ordering and timestamps. */
   updatedAt: number;
+  /**
+   * Only set when cook chips are active: how many ingredient lines match no
+   * chip and are not a staple (ADR-0003 §B).
+   */
+  missingCount?: number;
+  /** The missing line items themselves, in stored position order. */
+  missingItems?: string[];
 }
 
 export interface SearchResult {
@@ -75,6 +92,14 @@ export interface CategoryCount {
 
 /** Default page size for the home list. Tuned for phone, single screen. */
 const DEFAULT_LIMIT = 50;
+
+/**
+ * Cap on candidates fetched before cook-now ranking. The ranking has to see
+ * the whole (already-filtered) library to promise "every recipe stays
+ * visible", and 200 matches the global page ceiling. A single-household
+ * library is far below it.
+ */
+const COOK_NOW_CANDIDATES = 200;
 
 /**
  * Sanitize a free-text query into a safe FTS5 MATCH expression.
@@ -145,6 +170,59 @@ function filtersFragment(
 }
 
 /**
+ * Bulk id→item projection for the cook-now ranking. One raw query for the
+ * whole candidate page instead of a per-recipe round-trip; rows come back in
+ * stored line order so a card's missing list reads like the recipe.
+ */
+function ingredientItemsByRecipeId(
+  ids: readonly number[],
+): Map<number, string[]> {
+  const out = new Map<number, string[]>();
+  if (ids.length === 0) return out;
+  const placeholders = ids.map(() => "?").join(", ");
+  const rows = getRawSqlite()
+    .prepare(
+      `SELECT recipe_id AS recipeId, item
+         FROM ingredient_lines
+        WHERE recipe_id IN (${placeholders})
+        ORDER BY recipe_id ASC, position ASC`,
+    )
+    .all(...ids) as Array<{ recipeId: number; item: string }>;
+  for (const row of rows) {
+    const list = out.get(row.recipeId);
+    if (list) list.push(row.item);
+    else out.set(row.recipeId, [row.item]);
+  }
+  return out;
+}
+
+/**
+ * Apply the cook-now ranking to an already-filtered page (ADR-0003 §B).
+ *
+ * Chips only re-order: the SQL window fetched every candidate, so slicing here
+ * is what preserves the page contract. Empty chips return the page untouched,
+ * which keeps browse/relevance order byte-for-byte as before.
+ */
+function applyCookNow(
+  hits: SearchHit[],
+  chips: readonly string[],
+  limit: number,
+  offset: number,
+): SearchHit[] {
+  if (chips.length === 0) return hits;
+  const ranked = rankByMissing(
+    hits,
+    ingredientItemsByRecipeId(hits.map((h) => h.id)),
+    chips,
+  );
+  return ranked.slice(offset, offset + limit).map((row) => ({
+    ...row.recipe,
+    missingCount: row.missingCount,
+    missingItems: row.missingItems,
+  }));
+}
+
+/**
  * List recipes for the home page.
  *
  * - When `input.query` is non-empty, runs an FTS5 MATCH and orders by bm25
@@ -163,6 +241,11 @@ export function listRecipes(
   const ftsQuery = (input.query ?? "").trim()
     ? buildFtsQuery(input.query ?? "")
     : null;
+  const cookChips = parseChips(input.cook);
+  // With chips active the page must be ranked before the limit is applied, so
+  // fetch the full candidate set (capped) and slice in `applyCookNow`.
+  const windowLimit = cookChips.length > 0 ? COOK_NOW_CANDIDATES : limit;
+  const windowOffset = cookChips.length > 0 ? 0 : offset;
 
   const sqlite = getRawSqlite();
 
@@ -195,7 +278,7 @@ export function listRecipes(
          ORDER BY bm25(recipe_fts)
          LIMIT ? OFFSET ?`,
       )
-      .all(...filterParams, limit, offset) as Array<{
+      .all(...filterParams, windowLimit, windowOffset) as Array<{
         id: number;
         title: string;
         category: string;
@@ -212,14 +295,16 @@ export function listRecipes(
       )
       .get(...filterParams) as { n: number };
 
+    const mapped: SearchHit[] = hits.map((h) => ({
+      id: h.id,
+      title: h.title,
+      category: h.category as Category,
+      favorite: Boolean(h.favorite),
+      updatedAt: Number(h.updatedAt),
+    }));
+
     return {
-      hits: hits.map((h) => ({
-        id: h.id,
-        title: h.title,
-        category: h.category as Category,
-        favorite: Boolean(h.favorite),
-        updatedAt: Number(h.updatedAt),
-      })),
+      hits: applyCookNow(mapped, cookChips, limit, offset),
       total: totalRow.n,
       mode: "search",
     };
@@ -240,7 +325,7 @@ export function listRecipes(
         ORDER BY updated_at DESC, title ASC
         LIMIT ? OFFSET ?`,
     )
-    .all(...whereParams, limit, offset) as Array<{
+    .all(...whereParams, windowLimit, windowOffset) as Array<{
       id: number;
       title: string;
       category: string;
@@ -256,14 +341,16 @@ export function listRecipes(
   // query API; keep db available for the count branch callers.
   void db;
 
+  const mapped: SearchHit[] = rowsRaw.map((r) => ({
+    id: r.id,
+    title: r.title,
+    category: r.category as Category,
+    favorite: Boolean(r.favorite),
+    updatedAt: Number(r.updatedAt),
+  }));
+
   return {
-    hits: rowsRaw.map((r) => ({
-      id: r.id,
-      title: r.title,
-      category: r.category as Category,
-      favorite: Boolean(r.favorite),
-      updatedAt: Number(r.updatedAt),
-    })),
+    hits: applyCookNow(mapped, cookChips, limit, offset),
     total: totalRow.n,
     mode: "browse",
   };
