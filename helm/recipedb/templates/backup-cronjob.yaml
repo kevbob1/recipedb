@@ -1,0 +1,108 @@
+{{- /*
+Nightly disaster-recovery backup (roadmap item 3).
+
+Gated on backup.enabled: the release must keep deploying cleanly while the ssh
+key Secret does not exist yet, so the default is `false`. When it is on,
+`sshSecretName` is required -- a CronJob that cannot authenticate would just
+fail every night, silently.
+
+The pod co-mounts the app's RWO PVC read-only (local-path is node-local, so it
+schedules next to the app; a second read-only mount is safe) and runs
+deploy/backup-k8s.sh from the `backup` image stage. The DB copy itself goes
+through better-sqlite3's online backup API, which is consistent under live WAL
+writes -- no scale-down, no quiescing.
+*/ -}}
+{{- if .Values.backup.enabled }}
+{{- $sshSecret := required "backup.sshSecretName is required when backup.enabled=true: kubectl create secret generic recipedb-backup-ssh --from-file=id_ed25519=<key> --from-file=known_hosts=<ssh-keyscan output> (see README, Backups (k8s))" .Values.backup.sshSecretName }}
+{{- $imageRepo := .Values.backup.image.repository | default .Values.image.repository }}
+{{- $appTag := .Values.image.tag | default .Chart.AppVersion }}
+{{- $imageTag := .Values.backup.image.tag | default (printf "%s-backup" $appTag) }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "recipedb.fullname" . }}-backup
+  labels:
+    {{- include "recipedb.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  # Never overlap two backups on the same PVC; a stuck rsync must not stack.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.backup.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.backup.backoffLimit }}
+      activeDeadlineSeconds: {{ .Values.backup.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: {{ .Values.backup.ttlSecondsAfterFinished }}
+      template:
+        metadata:
+          labels:
+            {{- include "recipedb.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+          annotations:
+            # The ssh Secret lives outside this chart (operator-created), so
+            # there is nothing to checksum -- record which one the run used.
+            recipedb/backup-ssh-secret: {{ $sshSecret | quote }}
+        spec:
+          restartPolicy: Never
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: backup
+              # `backup` Dockerfile stage = runtime + openssh-client + rsync.
+              # The app image has no ssh client, so this tag is not optional.
+              image: "{{ $imageRepo }}:{{ $imageTag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["/bin/bash", "/app/backup-k8s.sh"]
+              env:
+                - name: DATA_DIR
+                  value: {{ .Values.env.DATA_DIR | default "/data" | quote }}
+                - name: WORKDIR
+                  value: "/tmp/backup"
+                - name: BACKUP_HOST
+                  value: {{ .Values.backup.host | quote }}
+                - name: BACKUP_USER
+                  value: {{ .Values.backup.sshUser | quote }}
+                - name: BACKUP_PATH
+                  value: {{ .Values.backup.path | quote }}
+                - name: RETENTION_DAYS
+                  value: {{ .Values.backup.retentionDays | quote }}
+                # ssh must not try to create $HOME/.ssh in a read-only image dir.
+                - name: HOME
+                  value: "/tmp"
+                - name: BACKUP_SSH_KEY
+                  value: "/secrets/{{ .Values.backup.secretKeys.privateKey }}"
+                - name: BACKUP_KNOWN_HOSTS
+                  value: "/secrets/{{ .Values.backup.secretKeys.knownHosts }}"
+              volumeMounts:
+                # READ-ONLY: the backup pod must never be able to write the
+                # volume the single-writer app owns.
+                - name: data
+                  mountPath: {{ .Values.env.DATA_DIR | default "/data" }}
+                  readOnly: true
+                - name: ssh
+                  mountPath: /secrets
+                  readOnly: true
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: {{ include "recipedb.dataVolume" . }}
+                readOnly: true
+            - name: ssh
+              secret:
+                secretName: {{ $sshSecret }}
+                defaultMode: 0400
+                items:
+                  - key: {{ .Values.backup.secretKeys.privateKey }}
+                    path: {{ .Values.backup.secretKeys.privateKey }}
+                  - key: {{ .Values.backup.secretKeys.knownHosts }}
+                    path: {{ .Values.backup.secretKeys.knownHosts }}
+{{- end }}

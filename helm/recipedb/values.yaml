@@ -135,6 +135,54 @@ secrets:
   SESSION_SECRET: ""
 
 # -----------------------------------------------------------------------------
+# Nightly backup CronJob (roadmap item 3)
+#
+# Ships recipes.db (consistent online copy via backup.cjs), images/ and
+# migrations-applied.json to BACKUP_HOST:BACKUP_PATH and prunes remote artifacts
+# past retentionDays. The /data PVC is mounted READ-ONLY; local-path storage is
+# node-local so the job schedules next to the app and does not need a
+# scale-down -- the SQLite online backup API is consistent under live WAL
+# writes.
+#
+# OFF by default: the CronJob needs an ssh key + known_hosts that are NOT part
+# of this chart (they are a separate k8s Secret created by the operator, see
+# README "Backups (k8s)"). Flip enabled to true only after that Secret exists
+# and the key is authorized on the backup host.
+# -----------------------------------------------------------------------------
+backup:
+  enabled: false
+  # UTC on the cluster's scheduler: 06:17 daily, after any late-night writes.
+  schedule: "17 6 * * *"
+  retentionDays: 14
+  host: "prox6"
+  sshUser: "root"
+  path: "/srv/recipedb/backups"
+  # Name of the pre-existing Secret holding the private key + known_hosts.
+  # Required at render time when enabled=true.
+  sshSecretName: ""
+  # Secret item keys; they are also the paths inside /secrets.
+  secretKeys:
+    privateKey: "id_ed25519"
+    knownHosts: "known_hosts"
+  # "" / "" -> "<image.repository>:<image.tag>-backup", i.e. the Dockerfile
+  # `backup` stage built from the same commit as the app image:
+  #   docker buildx build --target backup --push -t <repo>:<tag>-backup .
+  image:
+    repository: ""
+    tag: ""
+  backoffLimit: 2
+  activeDeadlineSeconds: 3600
+  startingDeadlineSeconds: 3600
+  ttlSecondsAfterFinished: 86400
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# -----------------------------------------------------------------------------
 # Container resources
 # -----------------------------------------------------------------------------
 resources:

@@ -40,6 +40,38 @@ USER node
 CMD ["node", "server.js"]
 
 # ---------------------------------------------------------------------------
+# Stage – backup (roadmap item 3): the runtime image plus the tooling the
+# nightly k8s CronJob needs.
+#
+# Everything in `runtime` is inherited unchanged -- same Node pin, same prod
+# node_modules (better-sqlite3 is what makes the SQLite online backup safe),
+# same uid 1000 -- and only openssh-client + rsync are added so
+# deploy/backup-k8s.sh can push the artifacts to prox6. Node's base image has
+# no ssh client, so the CronJob cannot use the app image.
+#
+# Build it explicitly, because `--target runtime` (deploy.sh) is unchanged and
+# the app image must stay byte-identical:
+#   docker buildx build --target backup --push -t registry.k.pd.o/recipedb:<tag>-backup .
+# The stage is deliberately NOT last: a bare `docker build` must keep producing
+# the `development` stage, and `--target runtime` the app image.
+# ---------------------------------------------------------------------------
+FROM runtime AS backup
+
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-client rsync \
+ && rm -rf /var/lib/apt/lists/*
+
+# backup.cjs is the unchanged online-backup helper; backup-k8s.sh drives it,
+# tars images + the migration journal, and rsyncs them over ssh.
+COPY deploy/backup.cjs deploy/backup-k8s.sh /app/
+RUN chmod 0755 /app/backup.cjs /app/backup-k8s.sh
+
+# Same non-root uid as the runtime image (the PVC is mounted read-only, so the
+# only writable paths are /tmp and the mounted ssh secret).
+USER node
+
+# ---------------------------------------------------------------------------
 # Stage – development (ticket #22): docker compose / devcontainer only.
 # Additive: the build + runtime stages above are unchanged, so helm/recipedb
 # keeps deploying exactly what it deployed before.
