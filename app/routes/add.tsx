@@ -24,9 +24,11 @@ import {
   type DraftIngredient,
   type RecipeDraft,
   countNeedEyes,
+  display,
+  formatAmount,
   ingredientConfidence,
+  setQty,
 } from "../lib/draft";
-import { display, formatAmount, setQty } from "../lib/ingredient-line";
 import { recognizeText } from "../lib/ocr";
 import { createDraft, requestUrlImport } from "../lib/import";
 import { submitDraft } from "../lib/save-transport";

@@ -14,6 +14,11 @@
  * (CHECK constraints, NOT NULLs, the four-part ingredient row). A draft is
  * the editor's view of a recipe: it can be empty, partial, untrusted. Keeping
  * them separate stops the editor from accidentally writing half-formed rows.
+ *
+ * Seam: this module is the public doorway to a draft AND its ingredient lines.
+ * Everything line-related (fromText/setQty/scale/display/formatAmount + the
+ * qty types) is re-exported from ./ingredient-line.ts below, so callers — the
+ * browser review editor included — import Draft things from here only.
  */
 
 import { CATEGORIES, type Category } from "./categories";
@@ -21,6 +26,45 @@ import { CATEGORIES, type Category } from "./categories";
 /** Closed MVP category list, re-exported for client code. */
 export { CATEGORIES };
 export type { Category };
+
+/**
+ * Trim-only normalization out of this module: ./normalize.ts is its single
+ * owner. Re-exported so callers of the draft seam have one import.
+ */
+export { trimOnly, trimOnlyRequired } from "./normalize";
+
+/**
+ * Ingredient lines are part of this seam.
+ *
+ * This module owns the draft + ingredient-line interface. The (qty, unit) ->
+ * numeric derivation itself lives in ./ingredient-line.ts, behind this seam;
+ * callers import line helpers and types from here, never from the
+ * implementation. That keeps the text-truth invariant (qty text is display
+ * truth, numerics are derived, never carried on a draft) with one doorway, and
+ * the implementation stays free to change without touching its callers.
+ *
+ * Client-safe: ./ingredient-line.ts has no node imports, so browser code (the
+ * review editor and the /add stepper) can derive a scaled view in place.
+ */
+export {
+  CANONICAL_UNITS,
+  QTY_PARSE_STATUSES,
+  display,
+  formatAmount,
+  fromText,
+  normalizeUnit,
+  scale,
+  setQty,
+} from "./ingredient-line";
+export type {
+  DerivedQuantity,
+  IngredientLine,
+  IngredientQty,
+  QtyParseStatus,
+  ScaledIngredientRow,
+  ScaledIngredientSource,
+  ScaledQuantity,
+} from "./ingredient-line";
 
 /** Per-field confidence. Matches the prototype's badges. */
 export type Confidence = "ok" | "warn" | "bad";
@@ -31,10 +75,12 @@ export type Confidence = "ok" | "warn" | "bad";
  * line text and the per-line confidence badge.
  *
  * The draft carries the TEXT truth only. The numeric view
- * (qtyAmount/qtyAmount2/qtyUnitNormalized/qtyParseStatus) lives in
- * app/lib/ingredient-line.ts and is derived from `(qty, unit)` at the point of
- * use — `fromText` for a read, `setQty` for an edit. Nothing carries it in the
- * draft, so a stale parse cannot outlive the text it came from (decision on #15).
+ * (qtyAmount/qtyAmount2/qtyUnitNormalized/qtyParseStatus) is not part of this
+ * interface: it is derived from `(qty, unit)` at the point of use through the
+ * same seam — `fromText` for a read, `setQty` for an edit (both re-exported
+ * from app/lib/draft.ts, implemented in app/lib/ingredient-line.ts). Nothing
+ * carries it in the draft, so a stale parse cannot outlive the text it came
+ * from (decision on #15).
  */
 export interface DraftIngredient {
   /** Raw line as captured (e.g. "2-3 cloves garlic, minced"). */
@@ -118,28 +164,6 @@ export function blankDraft(): RecipeDraft {
     ingredients: [],
     steps: [],
   };
-}
-
-/**
- * Trim-only normalization (ticket #3).
- *
- * Auto-normalization at review is whitespace, never content. This function
- * enforces that: leading/trailing whitespace is removed and internal
- * whitespace is collapsed to single spaces, but the underlying text is never
- * re-ordered, re-cased, or otherwise "improved".
- */
-export function trimOnly(value: string | null | undefined): string | null {
-  if (value === null || value === undefined) return null;
-  const trimmed = value.replace(/\s+/g, " ").trim();
-  return trimmed.length === 0 ? null : trimmed;
-}
-
-/**
- * Same as `trimOnly` but for required fields. Returns empty string for
- * nullish input — callers can decide whether that's an error.
- */
-export function trimOnlyRequired(value: string | null | undefined): string {
-  return trimOnly(value) ?? "";
 }
 
 /** Confidence for a required text field: 'bad' if empty, otherwise 'ok'. */
