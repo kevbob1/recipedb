@@ -1,4 +1,4 @@
-.PHONY: help up dev down logs shell test typecheck build check backfill-quantity rebuild clean
+.PHONY: help up dev down logs shell test typecheck build check patch backfill-quantity rebuild clean
 
 .DEFAULT_GOAL := help
 
@@ -46,6 +46,9 @@ build:       ## Production build (react-router build + esbuild boot bundle)
 	$(RUN) npm run build
 
 check: typecheck test  ## Typecheck, then test
+
+patch:       ## Coverage of changed app/ lines vs HEAD (min 95%, npm run test:patch)
+	$(RUN) npm run test:patch
 
 backfill-quantity:  ## Backfill parsed quantities (npm run db:backfill-quantity)
 	$(RUN) npm run db:backfill-quantity
