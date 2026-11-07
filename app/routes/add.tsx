@@ -33,6 +33,19 @@ import { recognizeText } from "../lib/ocr";
 import { createDraft, requestUrlImport } from "../lib/import";
 import { useSaveDraft } from "../lib/use-save-draft";
 import { MAX_SCAN_UPLOAD_BYTES, MAX_SCAN_UPLOAD_MB } from "../lib/scan/limits";
+import {
+  MAX_BULK_FILES,
+  bulkProgress,
+  formatBulkHeadline,
+  formatFileSize,
+  planBulkBatch,
+  runBulkImport,
+  summarizeBulkBatch,
+  type BulkFileState,
+  type BulkFileStatus,
+  type BulkSummary,
+  type RejectedFile,
+} from "../lib/bulk-import";
 import { ReviewEditor, inputStyle, primaryBtn, ghostBtn } from "./review-editor";
 import { requireAuth } from "../lib/auth.server";
 
@@ -49,7 +62,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 type Step = 1 | 2 | 3 | 4;
-type Entry = "url" | "photo" | "type" | null;
+type Entry = "url" | "photo" | "bulk" | "type" | null;
 
 export default function AddRoute(_args: Route.ComponentProps) {
   return (
@@ -73,6 +86,13 @@ function StepperShell() {
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [savedRecipeId, setSavedRecipeId] = useState<number | null>(null);
   const [submitInFlight, setSubmitInFlight] = useState(false);
+  // Bulk import (many photos -> many auto-saved recipes). The queue, the
+  // up-front rejections and the closing report are all bulk-import.ts state;
+  // this route only drives the run and renders it.
+  const [bulkStates, setBulkStates] = useState<BulkFileState[]>([]);
+  const [bulkRejected, setBulkRejected] = useState<RejectedFile[]>([]);
+  const [bulkSummary, setBulkSummary] = useState<BulkSummary | null>(null);
+  const [bulkRunning, setBulkRunning] = useState(false);
   // The save seam owns JSON-vs-multipart and the busy/error state for it.
   const {
     save: saveToServer,
@@ -93,7 +113,14 @@ function StepperShell() {
     // actually produces the next draft (manual here; url/scan once their
     // import succeeds), never by the route.
     setDraft(createDraft({ kind: "manual" }));
+    resetBulk();
     setStep(e === "type" ? 3 : 2);
+  }
+
+  function resetBulk() {
+    setBulkStates([]);
+    setBulkRejected([]);
+    setBulkSummary(null);
   }
 
   async function runUrlImport() {
@@ -152,6 +179,45 @@ function StepperShell() {
     }
   }
 
+  /**
+   * Bulk path: N images -> N recipes, no review step. Validation happens up
+   * front (planBulkBatch), then runBulkImport walks the queue one image at a
+   * time: OCR -> createDraft({kind:'scan'}) -> the same save seam the single
+   * photo flow uses. One failure never stops the batch.
+   */
+  async function runBulk(files: File[]) {
+    if (bulkRunning) return;
+    setError(null);
+    clearSaveError();
+    setBulkSummary(null);
+
+    const plan = planBulkBatch(files);
+    setBulkStates(plan.states);
+    setBulkRejected(plan.rejected);
+
+    if (plan.accepted.length === 0) {
+      // Nothing passed validation — report that straight away.
+      setBulkSummary(summarizeBulkBatch(plan.states, plan.rejected));
+      return;
+    }
+
+    setBulkRunning(true);
+    try {
+      const { summary } = await runBulkImport({
+        plan,
+        recognize: (file) => recognizeText(file),
+        save: (bulkDraft, file) => saveToServer(bulkDraft, file),
+        onChange: setBulkStates,
+      });
+      setBulkSummary(summary);
+    } finally {
+      // A failed per-file save sets the hook's error; the batch reports it per
+      // row instead, so don't leave a stale banner behind for the next step.
+      clearSaveError();
+      setBulkRunning(false);
+    }
+  }
+
   function restart() {
     setStep(1);
     setEntry(null);
@@ -162,6 +228,7 @@ function StepperShell() {
     setPhotoState("idle");
     setPhotoFile(null);
     setSavedRecipeId(null);
+    resetBulk();
   }
 
   return (
@@ -175,7 +242,18 @@ function StepperShell() {
       <StepperProgress step={step} labels={stepLabels} />
 
       {step === 1 ? <Step1Pick onPick={pickEntry} /> : null}
-      {step === 2 ? (
+      {step === 2 && entry === "bulk" ? (
+        <Step2Bulk
+          states={bulkStates}
+          rejected={bulkRejected}
+          summary={bulkSummary}
+          running={bulkRunning}
+          onRun={runBulk}
+          onReset={resetBulk}
+          onBack={() => setStep(1)}
+        />
+      ) : null}
+      {step === 2 && entry !== "bulk" ? (
         <Step2Get
           entry={entry}
           url={urlInput}
@@ -254,6 +332,16 @@ function Step1Pick({ onPick }: { onPick: (e: Entry) => void }) {
           <span style={{ fontSize: 22 }}>📷</span>
           <strong>Snap a photo of a printout</strong>
           <span style={{ color: "#6b655c", fontSize: 12 }}>Local OCR — the photo is kept with the recipe for re-runs</span>
+        </button>
+        <button
+          type="button"
+          className="entry-btn"
+          onClick={() => onPick("bulk")}
+          style={entryBtnStyle}
+        >
+          <span style={{ fontSize: 22 }}>🗂️</span>
+          <strong>Import a batch of photos</strong>
+          <span style={{ color: "#6b655c", fontSize: 12 }}>Up to {MAX_BULK_FILES} images — each is read and saved automatically</span>
         </button>
         <button
           type="button"
@@ -524,6 +612,304 @@ function Step4Saved(props: { recipeId: number | null; count: number; onAddAnothe
     </section>
   );
 }
+
+const BULK_STATUS_LABELS: Record<BulkFileStatus, string> = {
+  queued: "Queued",
+  ocr: "Reading",
+  saving: "Saving",
+  done: "Saved",
+  error: "Failed",
+};
+
+const BULK_STATUS_COLORS: Record<
+  BulkFileStatus,
+  { color: string; background: string }
+> = {
+  queued: { color: "#6b655c", background: "#efebe3" },
+  ocr: { color: "#8a5a00", background: "#fdf3dd" },
+  saving: { color: "#8a5a00", background: "#fdf3dd" },
+  done: { color: "#2f7a3e", background: "#e1f1e3" },
+  error: { color: "#9a3030", background: "#f7e3e1" },
+};
+
+/**
+ * Batch entry: pick many images, let the queue run. Unlike Step2Photo there is
+ * no review stop — the closing summary (saved links + named failures) is the
+ * only checkpoint. All queue rules live in ../lib/bulk-import.
+ */
+function Step2Bulk(props: {
+  states: BulkFileState[];
+  rejected: RejectedFile[];
+  summary: BulkSummary | null;
+  running: boolean;
+  onRun: (files: File[]) => void;
+  onReset: () => void;
+  onBack: () => void;
+}) {
+  const [selection, setSelection] = useState<File[]>([]);
+  const started = props.states.length > 0 || props.summary !== null;
+  const { total, finished } = bulkProgress(props.states);
+
+  function onFilesPicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(e.target.files ?? []);
+    props.onReset();
+    setSelection(picked);
+    // Allow picking the same images again after a run.
+    e.target.value = "";
+  }
+
+  function resetAll() {
+    setSelection([]);
+    props.onReset();
+  }
+
+  return (
+    <section>
+      <h2 style={{ margin: "0 0 4px" }}>Import a batch of photos</h2>
+      <p style={{ color: "#6b655c", marginTop: 0 }}>
+        Up to {MAX_BULK_FILES} images at once. Each one is read locally and saved
+        as its own recipe — there is no per-recipe review, so check the titles in
+        the summary at the end.
+      </p>
+
+      {!started ? (
+        <div style={{ display: "grid", gap: 10 }}>
+          <label style={entryBtnStyle}>
+            <span style={{ fontSize: 22 }}>🖼️</span>
+            <strong>
+              {selection.length > 0
+                ? `${selection.length} image${selection.length === 1 ? "" : "s"} selected`
+                : "Pick images"}
+            </strong>
+            <span style={{ color: "#6b655c", fontSize: 12 }}>
+              Images up to {MAX_SCAN_UPLOAD_MB}MB each · {MAX_BULK_FILES} per batch
+            </span>
+            <input
+              type="file"
+              multiple
+              accept="image/*"
+              onChange={onFilesPicked}
+              style={{ display: "none" }}
+            />
+          </label>
+
+          {selection.length > 0 ? (
+            <>
+              <ul style={bulkListStyle}>
+                {selection.map((file) => (
+                  <li
+                    key={`${file.name}:${file.size}:${file.lastModified}`}
+                    style={bulkRowStyle}
+                  >
+                    <span style={bulkNameStyle}>{file.name}</span>
+                    <span
+                      style={{
+                        ...bulkChipStyle,
+                        color: "#6b655c",
+                        background: "#efebe3",
+                      }}
+                    >
+                      {formatFileSize(file.size)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                onClick={() => props.onRun(selection)}
+                style={primaryBtn}
+              >
+                Import {selection.length} image{selection.length === 1 ? "" : "s"}
+              </button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+
+      {props.rejected.length > 0 ? (
+        <ul style={{ ...bulkListStyle, marginTop: 12 }}>
+          {props.rejected.map((file, index) => (
+            <li
+              key={`${file.name}:${index}`}
+              style={{ ...bulkRowStyle, color: "#a26800", fontSize: 13 }}
+            >
+              <span style={bulkNameStyle}>{file.name}</span>
+              <span>{file.message}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {props.states.length > 0 ? (
+        <>
+          <p style={{ fontSize: 12, color: "#6b655c", margin: "14px 0 6px" }}>
+            {props.running
+              ? `Working… ${finished} of ${total} finished`
+              : props.summary
+                ? formatBulkHeadline(props.summary)
+                : `${total} image${total === 1 ? "" : "s"} queued`}
+          </p>
+          <ul style={bulkListStyle}>
+            {props.states.map((state) => (
+              <li key={state.id} style={bulkRowStyle}>
+                <span style={bulkNameStyle}>{state.name}</span>
+                {state.status === "done" && state.recipeId !== undefined ? (
+                  <Link
+                    to={`/recipes/${state.recipeId}/review`}
+                    style={{ fontSize: 12, color: "#b04a2f" }}
+                  >
+                    open #{state.recipeId}
+                  </Link>
+                ) : (
+                  <span
+                    style={{
+                      ...bulkChipStyle,
+                      ...BULK_STATUS_COLORS[state.status],
+                    }}
+                  >
+                    {BULK_STATUS_LABELS[state.status]}
+                  </span>
+                )}
+                {state.error ? (
+                  <span
+                    style={{ flexBasis: "100%", color: "#9a3030", fontSize: 12 }}
+                  >
+                    {state.error}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+
+      {props.summary ? (
+        <div
+          style={{
+            marginTop: 16,
+            padding: "12px 14px",
+            border: "1px solid #e3ddd2",
+            borderRadius: 12,
+            background: "#fbf9f5",
+          }}
+        >
+          <strong style={{ display: "block", marginBottom: 6 }}>
+            {formatBulkHeadline(props.summary)}
+          </strong>
+          {props.summary.savedRecipes.length > 0 ? (
+            <ul style={{ margin: "0 0 8px", paddingLeft: 18, fontSize: 13 }}>
+              {props.summary.savedRecipes.map((saved, index) => (
+                <li key={`${saved.name}:${index}`}>
+                  {saved.recipeId === null ? (
+                    saved.name
+                  ) : (
+                    <Link
+                      to={`/recipes/${saved.recipeId}/review`}
+                      style={{ color: "#b04a2f" }}
+                    >
+                      {saved.name}
+                    </Link>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {props.summary.failures.length > 0 ? (
+            <ul
+              style={{
+                margin: 0,
+                paddingLeft: 18,
+                fontSize: 12,
+                color: "#9a3030",
+              }}
+            >
+              {props.summary.failures.map((failure, index) => (
+                <li key={`${failure.name}:${index}`}>
+                  {failure.name} — {failure.error}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {!props.running ? (
+            <button
+              type="button"
+              onClick={resetAll}
+              style={{ ...ghostBtn, marginTop: 10 }}
+            >
+              Import another batch
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div style={stickyBarStyle}>
+        <button
+          type="button"
+          onClick={props.onBack}
+          style={ghostBtn}
+          disabled={props.running}
+        >
+          Back
+        </button>
+        <span
+          style={{
+            marginLeft: "auto",
+            alignSelf: "center",
+            fontSize: 12,
+            color: "#6b655c",
+          }}
+        >
+          {props.running ? "Saving as it goes…" : null}
+        </span>
+      </div>
+    </section>
+  );
+}
+
+const bulkListStyle: React.CSSProperties = {
+  listStyle: "none",
+  margin: "10px 0 0",
+  padding: 0,
+  border: "1px solid #e3ddd2",
+  borderRadius: 12,
+  overflow: "hidden",
+};
+
+const bulkRowStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  flexWrap: "wrap",
+  padding: "8px 12px",
+  borderBottom: "1px solid #f0ece3",
+  fontSize: 13,
+};
+
+const bulkNameStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+const bulkChipStyle: React.CSSProperties = {
+  fontSize: 11,
+  padding: "2px 8px",
+  borderRadius: 999,
+  whiteSpace: "nowrap",
+};
+
+const stickyBarStyle: React.CSSProperties = {
+  display: "flex",
+  gap: 10,
+  marginTop: 18,
+  position: "sticky",
+  bottom: 0,
+  background: "#fff",
+  padding: "12px 0",
+  borderTop: "1px solid #e3ddd2",
+};
 
 const fieldLabelStyle: React.CSSProperties = {
   display: "block",
