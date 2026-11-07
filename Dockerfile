@@ -75,8 +75,10 @@ ARG DEV_GID=1000
 
 # python3/make/g++ are the node-gyp toolchain, kept as a fallback for any
 # native module that has no prebuilt binary for this platform/ABI.
+# git is required by scripts/patch-coverage.mjs (merge-base + diff), which
+# `make check` runs inside this container.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
+ && apt-get install -y --no-install-recommends python3 make g++ ca-certificates git \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -36,7 +36,7 @@ logs:        ## Tail dev server logs
 shell:       ## Open a shell in a throwaway dev container
 	$(RUN) sh
 
-test:        ## Run Vitest (npm test) in the container
+test:        ## Run Vitest without coverage (npm test) in the container
 	$(RUN) npm test
 
 typecheck:   ## Run react-router typegen + tsc --noEmit in the container
@@ -45,9 +45,9 @@ typecheck:   ## Run react-router typegen + tsc --noEmit in the container
 build:       ## Production build (react-router build + esbuild boot bundle)
 	$(RUN) npm run build
 
-check: typecheck test  ## Typecheck, then test
+check: typecheck patch  ## Typecheck, then tests + patch coverage gate
 
-patch:       ## Coverage of changed app/ lines vs HEAD (min 95%, npm run test:patch)
+patch:       ## Tests with coverage + changed-line gate vs merge-base(HEAD, origin/main)
 	$(RUN) npm run test:patch
 
 backfill-quantity:  ## Backfill parsed quantities (npm run db:backfill-quantity)

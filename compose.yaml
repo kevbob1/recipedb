@@ -34,6 +34,10 @@ services:
       #   FAMILY_PASSWORD_HASH=... SESSION_SECRET=... make up
       FAMILY_PASSWORD_HASH: "${FAMILY_PASSWORD_HASH:-}"
       SESSION_SECRET: "${SESSION_SECRET:-}"
+      # Patch-coverage gate overrides (scripts/patch-coverage.mjs). Empty means
+      # "use the default"; the script treats whitespace-only values as unset.
+      PATCH_COVERAGE_BASE: "${PATCH_COVERAGE_BASE:-}"
+      PATCH_COVERAGE_MIN: "${PATCH_COVERAGE_MIN:-}"
     volumes:
       # Whole repo bind-mounted for HMR + editing.
       - .:/app:rw

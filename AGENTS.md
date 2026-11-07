@@ -26,25 +26,36 @@ The authoritative command is:
 npm run verify     # = make check && echo VERIFY_OK
 ```
 
-`make check` runs `typecheck` then `test` inside the dev container via `$(RUN)`
+`make check` runs `typecheck` then `patch` inside the dev container via `$(RUN)`
 (`docker compose run --rm dev …`), so the container's `node_modules` and native
-bindings are used. `npm run test:patch` runs natively on the host (it needs git
-metadata and the local `coverage/` dir); `make patch` runs the same thing in the
-container. Never create a host `node_modules/` to make these work.
+bindings are used. `patch` is `npm run test:patch` = `vitest run --coverage`
+followed by `scripts/patch-coverage.mjs`; because that coverage run executes the
+whole Vitest suite, `make check` needs no separate plain `test` step. The dev
+image installs `git` (Dockerfile `development` stage) because the gate resolves
+a merge-base and reads the working-tree diff. Never create a host `node_modules/`
+to make these work.
 
 Pre-commit validation runs, in order:
 1. `typecheck` — `react-router typegen && tsc --noEmit` (0 errors)
-2. `test` — `vitest run` (0 failures)
-3. `test:patch` — `vitest run --coverage` + `scripts/patch-coverage.mjs`
-   (≥ 95% of changed lines under `app/`; override `PATCH_COVERAGE_MIN`)
-4. `build` — `react-router build` + esbuild boot bundle
+2. `test:patch` — `vitest run --coverage` (0 failures) then
+   `scripts/patch-coverage.mjs` (≥ 95% of changed lines under `app/`)
+3. `build` — `react-router build` + esbuild boot bundle (`make build`; not part
+   of `make check`)
 
 ```bash
 make typecheck
-make test
 make patch
 make build
 ```
+
+`make test` remains available for a plain, coverage-free `vitest run`.
+
+The patch gate diffs the working tree against `merge-base(HEAD, <ref>)`, where
+`<ref>` resolves in order: `PATCH_COVERAGE_BASE` (explicit override) →
+`origin/main` → `main` → `HEAD~1`. If no ref resolves, the gate exits 2 instead
+of skipping. On failure it prints up to 100 uncovered `file:line` entries
+alongside the per-file table. Override the threshold with `PATCH_COVERAGE_MIN`
+(default 95); both env vars pass through `compose.yaml`.
 
 If any command fails, fix it before committing. Report the exact command run
 and its result.
@@ -58,8 +69,9 @@ sentinel — a green summary without it is not acceptance:
 check: run command="npm run verify" expect=VERIFY_OK
 ```
 
-For changes with new logic, also require `npm run test:patch` to pass. Express
-acceptance as criteria + deliverables where a harness is not involved.
+For changes with new logic, the patch gate is part of `make check`, so the
+`VERIFY_OK` sentinel covers it too. Express acceptance as criteria +
+deliverables where a harness is not involved.
 
 ## Deployment
 

@@ -1,11 +1,21 @@
 #!/usr/bin/env node
 /**
  * Patch coverage gate — measure line coverage of the lines this change touches,
- * instead of the whole repo. Reads the V8 report written by `vitest --coverage`
- * (coverage/lcov.info) and intersects it with the changed lines in `app/`.
+ * instead of the whole repo. Reads the V8/Vitest report written by
+ * `vitest run --coverage` (coverage/lcov.info) and intersects it with the
+ * changed lines in `app/`.
  *
- * "Changed" means: unstaged + staged changes against a base ref (default HEAD),
+ * "Changed" means: the working tree (staged + unstaged) against the diff base,
  * plus untracked files (every countable line counts as changed).
+ *
+ * Diff base resolution (first ref that resolves wins):
+ *   1. PATCH_COVERAGE_BASE (explicit override)
+ *   2. origin/main
+ *   3. main
+ *   4. HEAD~1
+ * Each ref is resolved to merge-base(HEAD, ref), falling back to the ref's own
+ * commit when merge-base fails. With no resolvable ref the gate exits 2 — it
+ * never silently skips. The ref and sha actually used are logged.
  *
  * Usage:
  *   npm run test:patch                  # coverage run + this gate
@@ -13,10 +23,11 @@
  *
  * Environment:
  *   PATCH_COVERAGE_MIN    minimum changed-line coverage, percent (default 95)
- *   PATCH_COVERAGE_BASE   git ref to diff against (default HEAD)
+ *   PATCH_COVERAGE_BASE   git ref to diff against (default: origin/main, then
+ *                         main, then HEAD~1 — always via merge-base)
  *
- * Exit codes: 0 pass (or nothing changed to measure), 1 below threshold,
- * 2 missing lcov.info / git failure.
+ * Exit codes: 0 pass (or nothing changed to measure), 1 below threshold or
+ * missing coverage/lcov.info, 2 git failure or unresolvable diff base.
  */
 
 import { execFileSync } from "node:child_process";
@@ -25,9 +36,18 @@ import path from "node:path";
 
 const ROOT = process.cwd();
 const LCOV_PATH = path.join(ROOT, "coverage", "lcov.info");
-const MIN = Number(process.env.PATCH_COVERAGE_MIN ?? "95");
-const BASE = process.env.PATCH_COVERAGE_BASE ?? "HEAD";
 const APP_PREFIX = "app/";
+const UNCOVERED_LIMIT = 100;
+
+/** Treat an unset *or empty* env var as absent (compose passes "" through). */
+function envNumber(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  return trimmed === "" ? fallback : Number(trimmed);
+}
+
+const MIN = envNumber("PATCH_COVERAGE_MIN", 95);
 
 function fail(message) {
   console.error(`patch-coverage: ${message}`);
@@ -46,6 +66,52 @@ function git(args) {
   }
 }
 
+/** Non-throwing git: returns trimmed stdout, or null when the call fails. */
+function tryGit(args) {
+  try {
+    return execFileSync("git", args, {
+      cwd: ROOT,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Candidate diff-base refs, in resolution order. */
+function baseRefs() {
+  const explicit = process.env.PATCH_COVERAGE_BASE?.trim();
+  return explicit ? [explicit] : ["origin/main", "main", "HEAD~1"];
+}
+
+/** Resolve a ref to a commit sha, or null when it does not exist. */
+function commitOf(ref) {
+  const stdout = tryGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  const sha = stdout?.trim();
+  return sha ? sha : null;
+}
+
+/**
+ * First resolvable ref wins: prefer merge-base(HEAD, ref) so a feature branch
+ * is measured against its fork point, and fall back to the ref sha itself.
+ */
+function resolveBase() {
+  for (const ref of baseRefs()) {
+    const refSha = commitOf(ref);
+    if (!refSha) continue;
+
+    const mergeBase = tryGit(["merge-base", "HEAD", ref])?.trim();
+    return {
+      ref,
+      sha: mergeBase || refSha,
+      usedMergeBase: Boolean(mergeBase),
+    };
+  }
+  return null;
+}
+
 if (!Number.isFinite(MIN) || MIN < 0 || MIN > 100) {
   fail(`PATCH_COVERAGE_MIN must be a number 0-100, got ${process.env.PATCH_COVERAGE_MIN}`);
 }
@@ -57,6 +123,18 @@ if (!existsSync(LCOV_PATH)) {
   );
   process.exit(1);
 }
+
+const base = resolveBase();
+if (!base) {
+  fail(
+    `cannot determine a diff base (tried ${baseRefs().join(", ")}). ` +
+      "Set PATCH_COVERAGE_BASE=<ref> to override.",
+  );
+}
+
+const baseLabel = `${base.ref} (${base.sha.slice(0, 12)}${
+  base.usedMergeBase ? ", merge-base with HEAD" : ""
+})`;
 
 /* ---------------------------------------------------------------- lcov --- */
 
@@ -103,9 +181,9 @@ function addLines(file, lines) {
   }
 }
 
-// Tracked modifications (staged + unstaged) against the base ref.
+// Tracked modifications (staged + unstaged) against the resolved base.
 {
-  const diff = git(["diff", "-U0", "--no-color", BASE, "--"]);
+  const diff = git(["diff", "-U0", "--no-color", base.sha, "--"]);
   let file = null;
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
@@ -172,6 +250,8 @@ const isCoverable = (file) =>
   !/\.d\.[cm]?ts$/.test(file);
 
 const rows = [];
+/** @type {string[]} `file:line` entries for changed lines with zero hits */
+const uncovered = [];
 let covered = 0;
 let total = 0;
 
@@ -182,18 +262,23 @@ for (const [file, lines] of [...changed].sort(([a], [b]) => a.localeCompare(b)))
   let fileCovered = 0;
   let fileTotal = 0;
 
-  for (const line of lines) {
+  for (const line of [...lines].sort((a, b) => a - b)) {
     const hits = fileCoverage?.get(line);
     if (hits === undefined) {
       // No instrumented record. For files the coverage run never saw (brand-new
       // source, or code excluded from the report) every changed line is uncovered.
       if (!fileCoverage) {
         fileTotal += 1;
+        uncovered.push(`${file}:${line}`);
       }
       continue;
     }
     fileTotal += 1;
-    if (hits > 0) fileCovered += 1;
+    if (hits > 0) {
+      fileCovered += 1;
+    } else {
+      uncovered.push(`${file}:${line}`);
+    }
   }
 
   if (!fileTotal) continue;
@@ -204,7 +289,9 @@ for (const [file, lines] of [...changed].sort(([a], [b]) => a.localeCompare(b)))
 
 const percent = (part, whole) => (whole === 0 ? 100 : (part / whole) * 100);
 
-console.log(`Patch coverage: changed lines under ${APP_PREFIX} vs ${BASE} (min ${MIN}%)`);
+console.log(
+  `Patch coverage: changed lines under ${APP_PREFIX} vs ${baseLabel} (min ${MIN}%)`,
+);
 
 if (!rows.length) {
   console.log("  no changed app/ lines with coverage data — nothing to measure.");
@@ -230,6 +317,15 @@ if (overall < MIN) {
     `FAIL: patch coverage ${overall.toFixed(1)}% is below the ${MIN}% minimum ` +
       `(${total - covered} uncovered changed line${total - covered === 1 ? "" : "s"}).`,
   );
+  if (uncovered.length) {
+    console.error(`Uncovered changed lines (${uncovered.length}):`);
+    for (const entry of uncovered.slice(0, UNCOVERED_LIMIT)) {
+      console.error(`  ${entry}`);
+    }
+    if (uncovered.length > UNCOVERED_LIMIT) {
+      console.error(`  ... and ${uncovered.length - UNCOVERED_LIMIT} more`);
+    }
+  }
   console.error("Add tests covering the changed lines, or set PATCH_COVERAGE_MIN to override.");
   process.exit(1);
 }
