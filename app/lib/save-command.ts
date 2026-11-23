@@ -347,14 +347,26 @@ function validatePageFiles(files: unknown): SavePageFile[] {
  */
 export function validateSaveCommand(command: SaveCommand): ValidatedSaveCommand {
   switch (command.kind) {
-    case "new":
+    case "new": {
+      const prepared = validateDraft(command.draft);
+      const imageFilename = prepared.fields.imageFilename;
+      if (
+        imageFilename &&
+        !/^(?:\d+\/.+|_staging\/[^/]+\.webp)$/.test(imageFilename)
+      ) {
+        throw new SaveError(
+          "bad-draft",
+          "A new recipe image must be staged or stored in its recipe directory.",
+        );
+      }
       return {
         kind: "new",
-        prepared: validateDraft(command.draft),
+        prepared,
         imageBytes: command.imageBytes ?? null,
         pageFiles: validatePageFiles(command.pageFiles),
         pdfBytes: command.pdfBytes ?? null,
       };
+    }
     case "revise":
       return {
         kind: "revise",

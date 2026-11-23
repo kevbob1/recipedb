@@ -17,7 +17,9 @@
     "verify": "make check && echo VERIFY_OK",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx app/db/migrate.ts",
-    "db:backfill-quantity": "tsx scripts/backfill-quantity.ts"
+    "db:backfill-quantity": "tsx scripts/backfill-quantity.ts",
+    "backfill:scan": "node scripts/backfill-scan.mjs",
+    "ocr:export": "tsx scripts/ocr-export.ts"
   },
   "overrides": {
     "@esbuild-kit/core-utils": {

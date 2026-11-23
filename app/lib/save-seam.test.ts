@@ -194,6 +194,28 @@ describe("save seam — pure validation", () => {
     expect(validated.imageBytes).toEqual(bytes);
   });
 
+  it("accepts recipe-relative or staged images only on a new save", () => {
+    expect(() =>
+      validateSaveCommand({
+        kind: "new",
+        draft: { ...draft("Bad image path"), imageFilename: "images/photo.webp" },
+      }),
+    ).toThrowError(SaveError);
+    expect(
+      validateSaveCommand({
+        kind: "new",
+        draft: { ...draft("Staged image"), imageFilename: "_staging/image.webp" },
+      }),
+    ).toMatchObject({ kind: "new" });
+    expect(
+      validateSaveCommand({
+        kind: "revise",
+        recipeId: 12,
+        draft: { ...draft("Legacy image path"), imageFilename: "legacy/photo.webp" },
+      }),
+    ).toMatchObject({ kind: "revise" });
+  });
+
   it("turns a delete into a validated delete command with no draft", () => {
     expect(validateSaveCommand({ kind: "delete", recipeId: 7 })).toEqual({
       kind: "delete",

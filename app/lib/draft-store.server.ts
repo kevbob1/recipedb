@@ -37,8 +37,10 @@
  * constructors stay where they are (ADR-0001 deferred), and imageFilename
  * lifecycle stays with the Scan module for now.
  */
+import fs from "node:fs";
+import path from "node:path";
 import { eq } from "drizzle-orm";
-import { getDb, getRawSqlite } from "../db/client.server";
+import { getDb, getImagesDir, getRawSqlite } from "../db/client.server";
 import {
   ingredientLines,
   ocrTrainingSamples,
@@ -196,6 +198,7 @@ function captureTrainingSamples(
   recipeId: number,
   pages: Omit<NewRecipePage, "recipeId">[],
   accepted: boolean,
+  acceptedAt?: Date,
 ): void {
   if (pages.length === 0) return;
   const db = getDb();
@@ -221,7 +224,7 @@ function captureTrainingSamples(
         imageFilename: page.imageFilename,
         rawOcrText: rawByPageNo.get(page.pageNo) ?? page.rawOcrText ?? "",
         correctedText: page.rawOcrText ?? "",
-        acceptedAt: accepted ? new Date() : null,
+        acceptedAt: accepted ? acceptedAt ?? new Date() : null,
       })),
     )
     .run();
@@ -318,12 +321,35 @@ function insertNewRecipe(
     if (!inserted) throw new SaveError("insert-failed", "Recipe insert failed.");
     recipeId = inserted.id;
 
+    // URL-import images are staged before the recipe id exists. Move them into
+    // the recipe directory now so every retained image is recipe-scoped.
+    const stagedImage = prepared.fields.imageFilename;
+    const importedImageFilename = stagedImage?.startsWith("_staging/")
+      ? `${recipeId}/original.webp`
+      : null;
+    if (stagedImage?.startsWith("_staging/")) {
+      const imagesDir = getImagesDir();
+      const recipeDir = path.join(imagesDir, String(recipeId));
+      try {
+        fs.mkdirSync(recipeDir, { recursive: true });
+        fs.renameSync(
+          path.join(imagesDir, stagedImage),
+          path.join(recipeDir, "original.webp"),
+        );
+      } catch (err) {
+        throw new ScanImageError(
+          "image-write-failed",
+          `Could not store the imported image: ${(err as Error).message}`,
+        );
+      }
+    }
+
     // Retained bytes (ADR-0004): the original capture, one raster per page,
     // and the untouched source PDF. Filenames are decided here — pages by
     // their number, the capture as original.<ext> — so no transport can.
     const originalFilename = imageBytes
       ? saveOriginalScanImage(recipeId, imageBytes)
-      : null;
+      : importedImageFilename;
     const pageFilenameByNo = new Map<number, string>();
     for (const page of pageFiles) {
       pageFilenameByNo.set(
@@ -423,6 +449,23 @@ export function updateDraft(id: number, draft: RecipeDraft): SaveDraftResult {
   return savedDraft(executeSave({ kind: "revise", recipeId: id, draft }));
 }
 
+/**
+ * Backfill-only revise path. The caller owns the surrounding transaction and
+ * deletes old training samples first so the fresh OCR becomes the immutable
+ * raw text. Normal review continues to preserve its original raw text.
+ */
+export function updateDraftFromBackfill(
+  id: number,
+  draft: RecipeDraft,
+  acceptedAt: Date,
+): SaveDraftResult {
+  const validated = validateSaveCommand({ kind: "revise", recipeId: id, draft });
+  if (validated.kind !== "revise") {
+    throw new SaveError("bad-draft", "Expected a revise command.");
+  }
+  return reviseDraft(id, validated.prepared, acceptedAt);
+}
+
 /** Remove an already-validated recipe id. */
 function removeRecipe(recipeId: number): DeleteDraftResult {
   if (!deleteRecipe(recipeId)) {
@@ -437,8 +480,12 @@ function removeRecipe(recipeId: number): DeleteDraftResult {
  * transaction. Throws SaveError with code "not-found" when no recipe has that
  * id.
  */
-function reviseDraft(id: number, prepared: PersistedDraft): SaveDraftResult {
-  const now = new Date();
+function reviseDraft(
+  id: number,
+  prepared: PersistedDraft,
+  acceptedAt?: Date,
+): SaveDraftResult {
+  const now = acceptedAt ?? new Date();
   const db = getDb();
 
   const sqlite = getRawSqlite();
@@ -458,7 +505,7 @@ function reviseDraft(id: number, prepared: PersistedDraft): SaveDraftResult {
     // Replace, do not merge: the review screen's state is the whole truth.
     deleteChildren(id);
     insertChildren(id, prepared);
-    captureTrainingSamples(id, prepared.pages ?? [], true);
+    captureTrainingSamples(id, prepared.pages ?? [], true, acceptedAt);
   });
   run();
 

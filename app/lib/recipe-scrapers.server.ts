@@ -6,9 +6,9 @@
  * JSON-LD Recipe block directly from the HTML (the "escape hatch" called
  * out in the ticket). The browser never sees the HTML.
  *
- * Image download: sharp on the server, WebP or AVIF depending on the
- * Accept header. The downloaded image is written to DATA_DIR/images/ and
- * the public path is returned for the draft.
+ * Image download: sharp on the server, written to DATA_DIR/images/_staging/
+ * as WebP. The relative staging name travels with the draft until save assigns
+ * its recipe id and relocates it into that recipe's directory.
  *
  * Politeness: a single User-Agent string, no retries, and a 12s server-side
  * fetch timeout.
@@ -16,13 +16,14 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import {
   type IngredientItem,
   type InstructionItem,
   scrapeRecipe,
 } from "recipe-scrapers";
-import { getImagesDir, getRawSqlite } from "../db/client.server";
+import { getImagesDir } from "../db/client.server";
 import {
   type Confidence,
   type DraftIngredient,
@@ -112,9 +113,6 @@ export async function importFromUrl(rawUrl: string): Promise<ScrapedUrlResult> {
   if (imageUrl) {
     try {
       imageFilename = await downloadRecipeImage(imageUrl);
-      // Stash the local-served path in raw as a hint for the UI.
-      data.raw = (data.raw ?? "") +
-        `\n\n# local image: /images/${imageFilename}`;
     } catch (err) {
       // Image download is best-effort; never fail the import.
       if (process.env.NODE_ENV !== "production") {
@@ -309,8 +307,8 @@ function flattenInstructions(
 
 /**
  * Download an image, normalize it with sharp (WebP or AVIF), and write to
- * DATA_DIR/images/. Returns the filename. Best-effort: callers swallow
- * download failures because a missing image must never break an import.
+ * DATA_DIR/images/_staging/. Returns its relative name. Best-effort: callers
+ * swallow download failures because a missing image must never break an import.
  */
 async function downloadRecipeImage(imageUrl: string): Promise<string | null> {
   const controller = new AbortController();
@@ -333,25 +331,14 @@ async function downloadRecipeImage(imageUrl: string): Promise<string | null> {
 }
 
 async function writeImage(buf: Buffer): Promise<string> {
-  const dir = getImagesDir();
+  const dir = path.join(getImagesDir(), "_staging");
   fs.mkdirSync(dir, { recursive: true });
-  const id = nextImageId();
-  const filename = `${id}.webp`;
+  const filename = `${randomUUID()}.webp`;
   const out = path.join(dir, filename);
   await sharp(buf)
     .rotate() // honor EXIF orientation
     .resize({ width: 1600, withoutEnlargement: true })
     .webp({ quality: 82 })
     .toFile(out);
-  return filename;
-}
-
-function nextImageId(): number {
-  // Monotonic IDs in the same table the FTS5 bookkeeping uses; no separate
-  // image table exists in the MVP, so we track a tiny counter alongside the
-  // recipe id.
-  const row = getRawSqlite()
-    .prepare("SELECT COALESCE(MAX(id), 0) AS m FROM recipes")
-    .get() as { m: number };
-  return row.m + 1;
+  return `_staging/${filename}`;
 }

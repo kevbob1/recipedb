@@ -1,7 +1,7 @@
 # ADR-0004: Scanned-PDF ingestion doubles as OCR training capture
 
 Date: 2026-11-22
-Status: Accepted (amended 2026-11-23: §3 capture timing aligned with the implementation)
+Status: Accepted (amended 2026-11-23: first-persistence capture; amended 2026-11-23: current-page-set and image-layout semantics)
 
 ## Context
 
@@ -73,9 +73,20 @@ corrections — and backfilled pairs make old camera scans trainable too.
 
 - Review for multi-page drafts is a different (bigger) UI than the
   single-image review editor; the capture quality depends on it.
-- `ocr_training_samples` grows one row per persisted page across all scan
-  imports (camera and PDF alike), permanently — a revise rewrites the
-  recipe's rows in place (`accepted_at` distinguishes reviewed from raw-only
-  captures). Treat it as provenance, not derived data.
+- `ocr_training_samples` has one row per currently persisted page across scan
+  imports (camera and PDF alike). A revise replaces a recipe's rows with its
+  current page set, retiring removed pages; raw OCR remains write-once per page
+  number (`accepted_at` distinguishes reviewed from raw-only captures). Treat
+  it as provenance, not derived data.
 - The backfill overwrite is destructive by design: re-running it on a recipe
   replaces whatever fields the earlier acceptance wrote.
+
+## Amendment (2026-11-23, second)
+
+Phase 5 (Backfill) and image-layout normalization are in build. Revising
+rewrites training rows to the Recipe's current Page set; pages removed during
+review have their samples retired by design, so no training rows remain for
+pages that no longer belong to the Recipe. Every stored image lives under its
+recipe directory (`images/<recipeId>/…`). URL-import bytes stage at
+`images/_staging/<uuid>.webp` and relocate at save; flat `images/<n>.webp`
+paths are retired.

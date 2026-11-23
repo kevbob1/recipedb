@@ -112,6 +112,60 @@ function recipeCount(): number {
 }
 
 describe("retained scan bytes (ADR-0004 phase 3)", () => {
+  it("moves a staged URL image into its recipe directory and updates the cover", () => {
+    const stagedFilename = "_staging/url-import.webp";
+    const stagedPath = path.join(getImagesDir(), stagedFilename);
+    fs.mkdirSync(path.dirname(stagedPath), { recursive: true });
+    fs.writeFileSync(stagedPath, PNG_BYTES);
+    const draft = {
+      ...blankDraft(),
+      title: "Imported Cookies",
+      category: "cookies" as const,
+      sourceType: "url" as const,
+      imageFilename: stagedFilename,
+    };
+
+    const { recipeId } = executeSave({ kind: "new", draft });
+    const storedFilename = `${recipeId}/original.webp`;
+
+    expect(recipeRow(recipeId)!.imageFilename).toBe(storedFilename);
+    expect(fs.existsSync(path.join(getImagesDir(), storedFilename))).toBe(true);
+    expect(fs.existsSync(stagedPath)).toBe(false);
+  });
+
+  it("leaves a non-staging recipe-relative image filename untouched", () => {
+    const filename = "12/original.webp";
+    const draft = {
+      ...blankDraft(),
+      title: "Existing image",
+      imageFilename: filename,
+    };
+
+    const { recipeId } = executeSave({ kind: "new", draft });
+
+    expect(recipeRow(recipeId)!.imageFilename).toBe(filename);
+  });
+
+  it("removes a recipe directory when relocating a missing staged image fails", () => {
+    const beforeCount = recipeCount();
+    const recipeDirectoriesBefore = fs
+      .readdirSync(getImagesDir())
+      .filter((entry) => entry !== "_staging");
+    const draft = {
+      ...blankDraft(),
+      title: "Missing staged image",
+      imageFilename: "_staging/missing.webp",
+    };
+
+    expect(() => executeSave({ kind: "new", draft })).toThrow(ScanImageError);
+    expect(recipeCount()).toBe(beforeCount);
+    expect(
+      fs
+        .readdirSync(getImagesDir())
+        .filter((entry) => entry !== "_staging"),
+    ).toEqual(recipeDirectoriesBefore);
+  });
+
   it("camera save: one page row named after the retained original", () => {
     const draft = scanDraftWithPages([
       { pageNo: 1, imageFilename: "", text: "1 cup flour" },

@@ -14,14 +14,12 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 const mocks = vi.hoisted(() => ({
   scrapeRecipe: vi.fn(),
   getImagesDir: vi.fn(),
-  getRawSqlite: vi.fn(),
   fetch: vi.fn(),
 }));
 
 vi.mock("recipe-scrapers", () => ({ scrapeRecipe: mocks.scrapeRecipe }));
 vi.mock("../db/client.server", () => ({
   getImagesDir: mocks.getImagesDir,
-  getRawSqlite: mocks.getRawSqlite,
 }));
 
 import { ImportError, importFromUrl, normalizeUrl } from "./recipe-scrapers.server";
@@ -44,10 +42,6 @@ beforeEach(() => {
   mocks.fetch.mockReset();
   mocks.getImagesDir.mockReset();
   mocks.getImagesDir.mockReturnValue(path.join(tmpDir, "images"));
-  mocks.getRawSqlite.mockReset();
-  mocks.getRawSqlite.mockReturnValue({
-    prepare: () => ({ get: () => ({ m: 41 }) }),
-  });
   vi.stubGlobal("fetch", mocks.fetch);
 });
 
@@ -183,10 +177,10 @@ describe("importFromUrl — recipe-scrapers path", () => {
       { position: 2, text: "Add pasta." },
     ]);
 
-    expect(result.imageFilename).toBe("42.webp");
-    const written = path.join(tmpDir, "images", "42.webp");
+    expect(result.imageFilename).toMatch(/^_staging\/[0-9a-f-]+\.webp$/i);
+    const written = path.join(tmpDir, "images", result.imageFilename!);
     expect(fs.existsSync(written)).toBe(true);
-    expect(result.data.raw).toContain("# local image: /images/42.webp");
+    expect(result.data.raw).not.toContain("# local image:");
     // The fetch asked politely for HTML and then for an image.
     expect(mocks.fetch).toHaveBeenNthCalledWith(
       1,
@@ -318,7 +312,7 @@ describe("importFromUrl — JSON-LD fallback", () => {
     ]);
     // The fallback's raw drawer is the whole block list.
     expect(result.data.raw).toContain('"@graph"');
-    expect(result.imageFilename).toBe("42.webp");
+    expect(result.imageFilename).toMatch(/^_staging\/[0-9a-f-]+\.webp$/i);
     warn.mockRestore();
   });
 

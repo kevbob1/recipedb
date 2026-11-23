@@ -47,7 +47,7 @@ The byte-for-byte retained upload behind a Scan: one image per Page, plus the wh
 _Avoid_: Source file, attachment, raw file
 
 **Training sample**:
-The captured pair for one Page: its image, the raw OCR text read from it, and the corrected text a person accepted at Review. Written when a Page's text is accepted; feeds OCR training. Drafts that were never reviewed capture the image and raw text only.
+The captured pair for one Page: its image, raw OCR text, and corrected text. Written at first persistence with corrected text seeded from raw OCR and acceptance unset; revising at Review updates the correction and signals acceptance. Raw text is write-once per page number, while capture history follows the Recipe's current Page set: removing a Page retires its sample. Feeds OCR training.
 _Avoid_: Dataset row, ground truth, training data
 
 **Backfill**:
