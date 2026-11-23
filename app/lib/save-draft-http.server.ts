@@ -13,7 +13,7 @@
  * would be pulled into the client bundle.
  */
 import { MAX_SCAN_UPLOAD_BYTES } from "./scan/index.server";
-import type { SaveCommand } from "./save-command";
+import type { SaveCommand, SavePageFile } from "./save-command";
 
 /** A command ready to dispatch, or a Response the caller should return. */
 export type ParseSaveResult = SaveCommand | { error: Response };
@@ -22,6 +22,10 @@ function badRequest(error: string, message?: string): { error: Response } {
   return {
     error: Response.json(message ? { error, message } : { error }, { status: 400 }),
   };
+}
+
+function tooLarge(error: string, message: string): { error: Response } {
+  return { error: Response.json({ error, message }, { status: 413 }) };
 }
 
 function readRecipeId(value: unknown): number | null | undefined {
@@ -44,14 +48,20 @@ function deleteCommand(recipeId: number | null): ParseSaveResult {
  * Turn a present draft into a new-or-revise command. `draft` stays raw (a JSON
  * string for multipart, the parsed value for JSON bodies) because decoding is
  * a validity decision owned by the store.
+ *
+ * Page rasters and the source PDF (ADR-0004) ride alongside the capture on
+ * new saves only; on a revise the transport still size/magic-checks the bytes,
+ * then drops them, mirroring the original capture.
  */
 function draftCommand(
   recipeId: number | null,
   draft: unknown,
   imageBytes: Buffer | null,
+  pageFiles: SavePageFile[] = [],
+  pdfBytes: Buffer | null = null,
 ): ParseSaveResult {
   return recipeId === null
-    ? { kind: "new", draft, imageBytes }
+    ? { kind: "new", draft, imageBytes, pageFiles, pdfBytes }
     : { kind: "revise", recipeId, draft };
 }
 
@@ -59,9 +69,9 @@ function draftCommand(
  * Read the draft, optional capture, and routing fields from either transport.
  * Returns a Response for malformed input so the caller can early-return.
  *
- * Accepted shapes (unchanged):
+ * Accepted shapes:
  *  - JSON `{ draft, recipeId?, intent? }` (and the legacy bare draft)
- *  - multipart `draft`, `image?`, `recipeId?`, `intent?`
+ *  - multipart `draft`, `image?`, `page-<n>?`, `pdf?`, `recipeId?`, `intent?`
  */
 export async function parseSaveBody(request: Request): Promise<ParseSaveResult> {
   const contentType = (request.headers.get("content-type") ?? "").toLowerCase();
@@ -119,24 +129,74 @@ async function parseMultipartBody(request: Request): Promise<ParseSaveResult> {
   }
 
   const file = form.get("image");
-  if (file === null) return draftCommand(recipeId, rawDraft, null);
   if (typeof file === "string") return badRequest("bad-image");
   // Cheap pre-check before buffering; the definitive check is on the bytes
   // inside the store.
-  if (file.size > MAX_SCAN_UPLOAD_BYTES) {
-    return {
-      error: Response.json(
-        {
-          error: "image-too-large",
-          message: `Images must be ${MAX_SCAN_UPLOAD_BYTES / (1024 * 1024)}MB or smaller.`,
-        },
-        { status: 413 },
-      ),
-    };
+  if (file && file.size > MAX_SCAN_UPLOAD_BYTES) {
+    return tooLarge(
+      "image-too-large",
+      `Images must be ${MAX_SCAN_UPLOAD_BYTES / (1024 * 1024)}MB or smaller.`,
+    );
+  }
+  const imageBytes = file ? Buffer.from(await file.arrayBuffer()) : null;
+
+  // Page rasters (ADR-0004): one uploaded file per scanned-PDF page, named
+  // page-<n> after its 1-based page number. Same ceiling and pre-check rules
+  // as the original capture.
+  const seenPages = new Set<number>();
+  const pageFiles: SavePageFile[] = [];
+  for (const [name, value] of form.entries()) {
+    const match = /^page-(\d+)$/.exec(name);
+    if (!match) continue;
+    const pageNo = Number(match[1]);
+    if (!Number.isInteger(pageNo) || pageNo < 1) {
+      return badRequest("bad-page", `Page number "${name}" is not valid.`);
+    }
+    if (typeof value === "string") {
+      return badRequest("bad-page", `Page ${pageNo} upload is not a file.`);
+    }
+    if (seenPages.has(pageNo)) {
+      return badRequest("bad-page", `Page ${pageNo} was uploaded twice.`);
+    }
+    seenPages.add(pageNo);
+    if (value.size > MAX_SCAN_UPLOAD_BYTES) {
+      return tooLarge(
+        "image-too-large",
+        `Images must be ${MAX_SCAN_UPLOAD_BYTES / (1024 * 1024)}MB or smaller.`,
+      );
+    }
+    pageFiles.push({ pageNo, bytes: Buffer.from(await value.arrayBuffer()) });
+  }
+  pageFiles.sort((a, b) => a.pageNo - b.pageNo);
+
+  // The original scanned PDF rides alongside the page rasters and is stored
+  // byte-for-byte (ADR-0004). Cheap pre-checks here; the definitive check is
+  // on the bytes inside the store.
+  const pdf = form.get("pdf");
+  let pdfBytes: Buffer | null = null;
+  if (pdf !== null) {
+    if (typeof pdf === "string") {
+      return badRequest("bad-pdf", "The PDF upload is not a file.");
+    }
+    if (pdf.size > MAX_SCAN_UPLOAD_BYTES) {
+      return tooLarge(
+        "pdf-too-large",
+        `PDFs must be ${MAX_SCAN_UPLOAD_BYTES / (1024 * 1024)}MB or smaller.`,
+      );
+    }
+    pdfBytes = Buffer.from(await pdf.arrayBuffer());
+    if (pdfBytes.toString("ascii", 0, 5) !== "%PDF-") {
+      return badRequest("bad-pdf", "The uploaded file is not a PDF.");
+    }
   }
 
-  const imageBytes = Buffer.from(await file.arrayBuffer());
   // Revisions do not attach captures (unchanged): the bytes were still
-  // size-checked, then dropped before the command is built.
-  return draftCommand(recipeId, rawDraft, recipeId === null ? imageBytes : null);
+  // checked, then dropped before the command is built.
+  return draftCommand(
+    recipeId,
+    rawDraft,
+    recipeId === null ? imageBytes : null,
+    recipeId === null ? pageFiles : [],
+    recipeId === null ? pdfBytes : null,
+  );
 }

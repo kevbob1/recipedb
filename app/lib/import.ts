@@ -92,6 +92,14 @@ export interface ScanDraftInput {
    * existing recipe passes the recipe's own capture so the pointer survives.
    */
   imageFilename?: string | null;
+  /**
+   * Per-page raw text and capture pointers for multi-page scans (ADR-0004).
+   * Omitted for single-image scans; present for a scanned PDF's pages. The
+   * caller owns the page numbers — they are mapped, never renumbered. An
+   * omitted `imageFilename` maps to null: the real filename lands when the
+   * page bytes are uploaded with the save.
+   */
+  pages?: { pageNo: number; imageFilename?: string | null; text: string }[];
 }
 
 /** Start a recipe by hand: no outside artifact at all. */
@@ -154,6 +162,17 @@ function draftFromScan(input: ScanDraftInput): RecipeDraft {
     imageFilename: input.imageFilename ?? null,
     ingredients: parsed.ingredients,
     steps: parsed.steps,
+    // Page rows ride through as given (ADR-0004): identity (pageNo) and text
+    // are the caller's; filenames normalize to null when absent or blank.
+    ...(input.pages && input.pages.length > 0
+      ? {
+          pages: input.pages.map((page) => ({
+            pageNo: page.pageNo,
+            imageFilename: page.imageFilename || null,
+            text: page.text,
+          })),
+        }
+      : {}),
   };
 }
 

@@ -41,11 +41,14 @@ import { eq } from "drizzle-orm";
 import { getDb, getRawSqlite } from "../db/client.server";
 import {
   ingredientLines,
+  ocrTrainingSamples,
+  recipePages,
   recipes,
   steps,
   tags,
   type NewIngredientLine,
   type NewRecipe,
+  type NewRecipePage,
 } from "../db/schema.server";
 import {
   type DraftIngredient,
@@ -59,12 +62,16 @@ import {
   validateSaveCommand,
   type PersistedDraft,
   type SaveCommand,
+  type SavePageFile,
 } from "./save-command";
 import {
   ScanImageError,
   attachImageFilename,
   deleteRecipeImage,
   saveOriginalScanImage,
+  savePageScanImage,
+  saveSourcePdf,
+  validatePdfUpload,
   validateScanUpload,
 } from "./scan/index.server";
 
@@ -130,6 +137,17 @@ export function composeDraft(
       .sort((a, b) => a.position - b.position)
       .map((row) => ({ position: row.position, text: row.text })),
   };
+  // Pages round-trip as page-order DraftPage rows; absent when there are
+  // none so single-image drafts look exactly as they did before (ADR-0004).
+  if (persisted.pages && persisted.pages.length > 0) {
+    draft.pages = [...persisted.pages]
+      .sort((a, b) => a.pageNo - b.pageNo)
+      .map((row) => ({
+        pageNo: row.pageNo,
+        imageFilename: row.imageFilename ?? null,
+        text: row.rawOcrText ?? "",
+      }));
+  }
   if (raw !== undefined) draft.raw = raw;
   return draft;
 }
@@ -152,6 +170,61 @@ function insertChildren(recipeId: number, prepared: PersistedDraft): void {
       .values(prepared.tags.map((label) => ({ label, recipeId })))
       .run();
   }
+  if (prepared.pages && prepared.pages.length > 0) {
+    db.insert(recipePages)
+      .values(prepared.pages.map((row) => ({ ...row, recipeId })))
+      .run();
+  }
+}
+
+/**
+ * OCR training capture (ADR-0004): one sample per persisted page.
+ *
+ * The raw side is write-once — the text as first persisted for that page,
+ * which is the engine's output for an auto-saved import — and survives
+ * revisions; the corrected side is the page text at THIS save. `accepted`
+ * marks a review acceptance (a revise: the review screen is the only caller),
+ * which is when a human has had the text in front of them.
+ *
+ * Runs inside the caller's transaction. Rows are deleted-then-rewritten per
+ * recipe, so pages removed in a revise leave no strays, and deleting the
+ * recipe cascades (the samples are provenance, never standalone). Nothing
+ * trains off these rows here — export is offline, training never runs in the
+ * container.
+ */
+function captureTrainingSamples(
+  recipeId: number,
+  pages: Omit<NewRecipePage, "recipeId">[],
+  accepted: boolean,
+): void {
+  if (pages.length === 0) return;
+  const db = getDb();
+  const existing = db
+    .select({
+      pageNo: ocrTrainingSamples.pageNo,
+      rawOcrText: ocrTrainingSamples.rawOcrText,
+    })
+    .from(ocrTrainingSamples)
+    .where(eq(ocrTrainingSamples.recipeId, recipeId))
+    .all();
+  const rawByPageNo = new Map(
+    existing.map((row) => [row.pageNo, row.rawOcrText]),
+  );
+  db.delete(ocrTrainingSamples)
+    .where(eq(ocrTrainingSamples.recipeId, recipeId))
+    .run();
+  db.insert(ocrTrainingSamples)
+    .values(
+      pages.map((page) => ({
+        recipeId,
+        pageNo: page.pageNo,
+        imageFilename: page.imageFilename,
+        rawOcrText: rawByPageNo.get(page.pageNo) ?? page.rawOcrText ?? "",
+        correctedText: page.rawOcrText ?? "",
+        acceptedAt: accepted ? new Date() : null,
+      })),
+    )
+    .run();
 }
 
 /** Delete the child rows for a recipe. Caller supplies the transaction. */
@@ -160,6 +233,7 @@ function deleteChildren(recipeId: number): void {
   db.delete(ingredientLines).where(eq(ingredientLines.recipeId, recipeId)).run();
   db.delete(steps).where(eq(steps.recipeId, recipeId)).run();
   db.delete(tags).where(eq(tags.recipeId, recipeId)).run();
+  db.delete(recipePages).where(eq(recipePages.recipeId, recipeId)).run();
 }
 
 /** Result of a dispatched save command. */
@@ -177,7 +251,12 @@ export function executeSave(command: SaveCommand): SaveResult {
   const validated = validateSaveCommand(command);
   switch (validated.kind) {
     case "new":
-      return insertNewRecipe(validated.prepared, validated.imageBytes);
+      return insertNewRecipe(
+        validated.prepared,
+        validated.imageBytes,
+        validated.pageFiles,
+        validated.pdfBytes,
+      );
     case "revise":
       return reviseDraft(validated.recipeId, validated.prepared);
     case "delete":
@@ -212,9 +291,13 @@ function savedDraft(result: SaveResult): SaveDraftResult {
 function insertNewRecipe(
   prepared: PersistedDraft,
   imageBytes: Buffer | null,
+  pageFiles: SavePageFile[] = [],
+  pdfBytes: Buffer | null = null,
 ): SaveDraftResult {
   // Validate before touching storage: a bad capture cannot create a recipe.
   if (imageBytes) validateScanUpload(imageBytes);
+  for (const page of pageFiles) validateScanUpload(page.bytes);
+  if (pdfBytes) validatePdfUpload(pdfBytes);
 
   const now = new Date();
   const baseRecipe: NewRecipe = {
@@ -234,11 +317,44 @@ function insertNewRecipe(
       .get();
     if (!inserted) throw new SaveError("insert-failed", "Recipe insert failed.");
     recipeId = inserted.id;
-    insertChildren(recipeId, prepared);
-    if (imageBytes) {
-      const filename = saveOriginalScanImage(recipeId, imageBytes);
-      attachImageFilename(recipeId, filename);
+
+    // Retained bytes (ADR-0004): the original capture, one raster per page,
+    // and the untouched source PDF. Filenames are decided here — pages by
+    // their number, the capture as original.<ext> — so no transport can.
+    const originalFilename = imageBytes
+      ? saveOriginalScanImage(recipeId, imageBytes)
+      : null;
+    const pageFilenameByNo = new Map<number, string>();
+    for (const page of pageFiles) {
+      pageFilenameByNo.set(
+        page.pageNo,
+        savePageScanImage(recipeId, page.pageNo, page.bytes),
+      );
     }
+    if (pdfBytes) saveSourcePdf(recipeId, pdfBytes);
+
+    // Page rows: an uploaded raster wins; else the draft's own filename
+    // round-trips (existing tests pin this); else the capture (the camera
+    // flow's single page row).
+    const pages = (prepared.pages ?? []).map((row) => ({
+      ...row,
+      imageFilename:
+        pageFilenameByNo.get(row.pageNo) ??
+        row.imageFilename ??
+        originalFilename,
+    }));
+    insertChildren(recipeId, pages ? { ...prepared, pages } : prepared);
+    captureTrainingSamples(recipeId, pages ?? [], false);
+
+    // The recipe cover points at page 1 when there are page rasters, else at
+    // the original capture.
+    const cover =
+      pageFilenameByNo.get(1) ??
+      (prepared.pages?.length
+        ? (prepared.pages.find((p) => p.pageNo === 1)?.imageFilename ??
+          originalFilename)
+        : originalFilename);
+    if (cover) attachImageFilename(recipeId, cover);
   });
 
   try {
@@ -342,6 +458,7 @@ function reviseDraft(id: number, prepared: PersistedDraft): SaveDraftResult {
     // Replace, do not merge: the review screen's state is the whole truth.
     deleteChildren(id);
     insertChildren(id, prepared);
+    captureTrainingSamples(id, prepared.pages ?? [], true);
   });
   run();
 
@@ -383,6 +500,11 @@ export function loadDraft(id: number): RecipeDraft | null {  const db = getDb();
     .all();
   const sts = db.select().from(steps).where(eq(steps.recipeId, id)).all();
   const tgs = db.select().from(tags).where(eq(tags.recipeId, id)).all();
+  const pgs = db
+    .select()
+    .from(recipePages)
+    .where(eq(recipePages.recipeId, id))
+    .all();
 
   return composeDraft({
     fields: {
@@ -408,5 +530,10 @@ export function loadDraft(id: number): RecipeDraft | null {  const db = getDb();
     })),
     steps: sts.map((row) => ({ position: row.position, text: row.text })),
     tags: tgs.map((row) => row.label),
+    pages: pgs.map((row) => ({
+      pageNo: row.pageNo,
+      imageFilename: row.imageFilename,
+      rawOcrText: row.rawOcrText,
+    })),
   });
 }

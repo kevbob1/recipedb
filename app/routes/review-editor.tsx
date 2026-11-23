@@ -8,6 +8,7 @@ import {
   CATEGORIES,
   type Category,
   type DraftIngredient,
+  type DraftPage,
   type RecipeDraft,
   display,
   formatAmount,
@@ -16,6 +17,7 @@ import {
   setQty,
 } from "../lib/draft";
 import { createDraft } from "../lib/import";
+import { bindPageText, pageTextSetter, reparseSetter } from "../lib/review-pages";
 
 export function ReviewEditor({
   draft,
@@ -168,6 +170,14 @@ export function ReviewEditor({
         ★ Favorite
       </label>
 
+      {draft.pages && draft.pages.length > 0 ? (
+        <PageReviewEditor
+          pages={draft.pages}
+          onPageText={pageTextSetter(draft, setDraft)}
+          onReparse={reparseSetter(draft, setDraft)}
+        />
+      ) : null}
+
       {reOcr ? (
         <div style={{ border: "1px solid #e3ddd2", borderRadius: 12, padding: "10px 12px", background: "#fdfcf8" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -204,6 +214,56 @@ export function ReviewEditor({
           {draft.raw ?? draft.rawOcrText ?? "(no source)"}
         </pre>
       </details>
+    </div>
+  );
+}
+
+/**
+ * Per-page review section (ADR-0004): each scanned page's raster beside its
+ * editable OCR text, with an explicit rebuild of the structured fields. The
+ * editing rules live in ../lib/review-pages so they are testable without a
+ * browser; this component just renders them.
+ */
+function PageReviewEditor({
+  pages,
+  onPageText,
+  onReparse,
+}: {
+  pages: DraftPage[];
+  onPageText: (pageNo: number, text: string) => void;
+  onReparse: () => void;
+}) {
+  return (
+    <div style={{ border: "1px solid #e3ddd2", borderRadius: 12, padding: "10px 12px", background: "#fdfcf8" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <strong style={{ fontSize: 13 }}>Scanned pages</strong>
+        <button type="button" onClick={onReparse} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12 }}>
+          Re-parse fields from page text
+        </button>
+      </div>
+      <p style={{ color: "#6b655c", fontSize: 12, margin: "6px 0 0" }}>
+        Edit what the OCR read per page. Fields only change when you re-parse them.
+      </p>
+      {pages.map((page) => (
+        <div key={page.pageNo} style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, color: "#6b655c", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            Page {page.pageNo}
+          </div>
+          {page.imageFilename ? (
+            <img
+              src={`/api/scan-images/${page.imageFilename}`}
+              alt={`Scan of page ${page.pageNo}`}
+              style={{ maxWidth: "100%", borderRadius: 10, border: "1px solid #e3ddd2", marginTop: 6, display: "block" }}
+            />
+          ) : null}
+          <textarea
+            value={page.text}
+            onChange={bindPageText(onPageText, page.pageNo)}
+            placeholder={`Text recognized on page ${page.pageNo}…`}
+            style={{ ...inputStyle, minHeight: 80, resize: "vertical" }}
+          />
+        </div>
+      ))}
     </div>
   );
 }

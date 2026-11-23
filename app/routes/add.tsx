@@ -41,6 +41,8 @@ import {
   planBulkBatch,
   runBulkImport,
   summarizeBulkBatch,
+  toBulkInputs,
+  appBulkSeams,
   type BulkFileState,
   type BulkFileStatus,
   type BulkSummary,
@@ -158,7 +160,15 @@ function StepperShell() {
       // and uploaded with the draft so the server can retain it (#28).
       setPhotoState("ocr");
       const text = await recognizeText(file);
-      setDraft(createDraft({ kind: "scan", text }));
+      // The camera capture is page 1 of a one-page scan (ADR-0004): the same
+      // per-page review/training model a scanned PDF gets.
+      setDraft(
+        createDraft({
+          kind: "scan",
+          text,
+          pages: [{ pageNo: 1, imageFilename: "", text }],
+        }),
+      );
       setPhotoState("done");
       setStep(3);
     } catch (err) {
@@ -191,7 +201,7 @@ function StepperShell() {
     clearSaveError();
     setBulkSummary(null);
 
-    const plan = planBulkBatch(files);
+    const plan = planBulkBatch(await toBulkInputs(files));
     setBulkStates(plan.states);
     setBulkRejected(plan.rejected);
 
@@ -205,8 +215,7 @@ function StepperShell() {
     try {
       const { summary } = await runBulkImport({
         plan,
-        recognize: (file) => recognizeText(file),
-        save: (bulkDraft, file) => saveToServer(bulkDraft, file),
+        ...appBulkSeams(recognizeText, saveToServer),
         onChange: setBulkStates,
       });
       setBulkSummary(summary);
@@ -340,8 +349,8 @@ function Step1Pick({ onPick }: { onPick: (e: Entry) => void }) {
           style={entryBtnStyle}
         >
           <span style={{ fontSize: 22 }}>🗂️</span>
-          <strong>Import a batch of photos</strong>
-          <span style={{ color: "#6b655c", fontSize: 12 }}>Up to {MAX_BULK_FILES} images — each is read and saved automatically</span>
+          <strong>Import a batch of photos or PDFs</strong>
+          <span style={{ color: "#6b655c", fontSize: 12 }}>Up to {MAX_BULK_FILES} files — each is read and saved automatically</span>
         </button>
         <button
           type="button"
@@ -667,8 +676,9 @@ function Step2Bulk(props: {
     <section>
       <h2 style={{ margin: "0 0 4px" }}>Import a batch of photos</h2>
       <p style={{ color: "#6b655c", marginTop: 0 }}>
-        Up to {MAX_BULK_FILES} images at once. Each one is read locally and saved
-        as its own recipe — there is no per-recipe review, so check the titles in
+        Up to {MAX_BULK_FILES} files at once. Each one is read locally and saved
+        as its own recipe — a scanned PDF becomes one recipe with all its pages.
+        There is no per-recipe review, so check the titles in
         the summary at the end.
       </p>
 
@@ -678,16 +688,16 @@ function Step2Bulk(props: {
             <span style={{ fontSize: 22 }}>🖼️</span>
             <strong>
               {selection.length > 0
-                ? `${selection.length} image${selection.length === 1 ? "" : "s"} selected`
-                : "Pick images"}
+                ? `${selection.length} file${selection.length === 1 ? "" : "s"} selected`
+                : "Pick images or PDFs"}
             </strong>
             <span style={{ color: "#6b655c", fontSize: 12 }}>
-              Images up to {MAX_SCAN_UPLOAD_MB}MB each · {MAX_BULK_FILES} per batch
+              Images and PDFs up to {MAX_SCAN_UPLOAD_MB}MB each · {MAX_BULK_FILES} per batch
             </span>
             <input
               type="file"
               multiple
-              accept="image/*"
+              accept="image/*,application/pdf"
               onChange={onFilesPicked}
               style={{ display: "none" }}
             />
@@ -719,7 +729,7 @@ function Step2Bulk(props: {
                 onClick={() => props.onRun(selection)}
                 style={primaryBtn}
               >
-                Import {selection.length} image{selection.length === 1 ? "" : "s"}
+                Import {selection.length} file{selection.length === 1 ? "" : "s"}
               </button>
             </>
           ) : null}

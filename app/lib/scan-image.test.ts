@@ -36,14 +36,23 @@ import {
   ScanImageError,
   attachImageFilename,
   handleReOcrRequest,
+  handleScanImageRequest,
   reocrRecipe,
   resolveStoredImagePath,
   saveOriginalScanImage,
+  savePageScanImage,
+  saveSourcePdf,
+  validatePdfUpload,
   validateScanUpload,
 } from "./scan/index.server";
 import { buildSessionCookie } from "./session.server";
 import { action as saveDraftAction } from "../routes/api.save-draft";
 import type { Route } from "../routes/+types/api.save-draft";
+import {
+  action as scanImagesAction,
+  loader as scanImagesLoader,
+} from "../routes/api.scan-images.$";
+import type { Route as ScanImagesRoute } from "../routes/+types/api.scan-images.$";
 
 /** Drive the real route action; parsing/dispatch live below it now. */
 const handleSaveDraftRequest = (request: Request) =>
@@ -123,6 +132,39 @@ function multipartRequest(
     method: "POST",
     headers: authenticated ? { cookie: authCookie } : {},
     body: form,
+  });
+}
+
+/** Free-form multipart request for page rasters, PDFs, and malformed cases. */
+function formRequest(form: FormData, authenticated = true): Request {
+  return new Request("http://localhost/api/save-draft", {
+    method: "POST",
+    headers: authenticated ? { cookie: authCookie } : {},
+    body: form,
+  });
+}
+
+function pdfBytes(): Buffer {
+  return Buffer.from("%PDF-1.4\n1 0 obj\nendobj\n%%EOF\n");
+}
+
+function pageDraft(): RecipeDraft {
+  return {
+    ...blankDraft(),
+    title: "Scanned PDF",
+    category: "other",
+    sourceType: "scan",
+    rawOcrText: "page one\n\npage two",
+    pages: [
+      { pageNo: 1, imageFilename: "", text: "page one" },
+      { pageNo: 2, imageFilename: "", text: "page two" },
+    ],
+  };
+}
+
+function pageFile(pageNo: number): File {
+  return new File([new Uint8Array(pngBytes(4 + pageNo))], `page-${pageNo}.png`, {
+    type: "image/png",
   });
 }
 
@@ -356,6 +398,232 @@ describe("POST /api/save-draft (multipart transport)", () => {
   });
 });
 
+describe("validatePdfUpload + page/PDF storage (ADR-0004)", () => {
+  function expectPdfError(fn: () => unknown, code: string): void {
+    try {
+      fn();
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ScanImageError);
+      expect((err as ScanImageError).code).toBe(code);
+    }
+  }
+
+  it("accepts a PDF by its magic and rejects empty, oversize, and non-PDF bytes", () => {
+    expect(validatePdfUpload(pdfBytes()).bytes).toBe(pdfBytes().byteLength);
+
+    expectPdfError(() => validatePdfUpload(Buffer.alloc(0)), "bad-pdf");
+    expectPdfError(
+      () => validatePdfUpload(Buffer.alloc(MAX_SCAN_UPLOAD_BYTES + 1)),
+      "pdf-too-large",
+    );
+    expectPdfError(
+      () => validatePdfUpload(Buffer.from("plain text")),
+      "bad-pdf",
+    );
+  });
+
+  it("stores page rasters as page-<n>.<ext> and the PDF byte-for-byte", () => {
+    const { recipeId } = saveDraft(scanDraft("Page storage"));
+
+    expect(savePageScanImage(recipeId, 2, pngBytes(8))).toBe(
+      `${recipeId}/page-2.png`,
+    );
+    expect(
+      fs.readFileSync(path.join(getImagesDir(), String(recipeId), "page-2.png")),
+    ).toEqual(pngBytes(8));
+
+    const pdf = pdfBytes();
+    expect(saveSourcePdf(recipeId, pdf)).toBe(`${recipeId}/source.pdf`);
+    expect(
+      fs.readFileSync(path.join(getImagesDir(), String(recipeId), "source.pdf")),
+    ).toEqual(pdf);
+  });
+});
+
+describe("POST /api/save-draft multipart page rasters + source PDF", () => {
+  it("persists pages with server-assigned filenames and the original PDF", async () => {
+    const pdf = pdfBytes();
+    const form = new FormData();
+    form.set("draft", JSON.stringify(pageDraft()));
+    form.set("page-1", pageFile(1));
+    form.set("page-2", pageFile(2));
+    form.set("pdf", new File([new Uint8Array(pdf)], "source.pdf"));
+
+    const res = await handleSaveDraftRequest(formRequest(form));
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { recipeId: number };
+
+    const draft = loadDraft(json.recipeId);
+    expect(draft?.imageFilename).toBe(`${json.recipeId}/page-1.png`);
+    expect(draft?.pages?.map((page) => page.imageFilename)).toEqual([
+      `${json.recipeId}/page-1.png`,
+      `${json.recipeId}/page-2.png`,
+    ]);
+    expect(draft?.pages?.map((page) => page.text)).toEqual([
+      "page one",
+      "page two",
+    ]);
+    expect(
+      fs.readFileSync(
+        path.join(getImagesDir(), String(json.recipeId), "source.pdf"),
+      ),
+    ).toEqual(pdf);
+  });
+
+  it("rejects a page field that is not a file", async () => {
+    const form = new FormData();
+    form.set("draft", JSON.stringify(pageDraft()));
+    form.set("page-1", "oops");
+    const res = await handleSaveDraftRequest(formRequest(form));
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({
+      error: "bad-page",
+    });
+  });
+
+  it("rejects a duplicate page upload", async () => {
+    const form = new FormData();
+    form.set("draft", JSON.stringify(pageDraft()));
+    form.append("page-1", pageFile(1));
+    form.append("page-1", pageFile(1));
+    const res = await handleSaveDraftRequest(formRequest(form));
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({
+      error: "bad-page",
+    });
+  });
+
+  it("rejects page zero", async () => {
+    const form = new FormData();
+    form.set("draft", JSON.stringify(pageDraft()));
+    form.set("page-0", pageFile(0));
+    const res = await handleSaveDraftRequest(formRequest(form));
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({
+      error: "bad-page",
+    });
+  });
+
+  it("rejects a PDF field that is not a file", async () => {
+    const form = new FormData();
+    form.set("draft", JSON.stringify(pageDraft()));
+    form.set("pdf", "not-a-file");
+    const res = await handleSaveDraftRequest(formRequest(form));
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({
+      error: "bad-pdf",
+    });
+  });
+
+  it("reports a page raster write failure", () => {
+    const recipeId = 987651;
+    const blockedPath = path.join(getImagesDir(), String(recipeId));
+    fs.mkdirSync(getImagesDir(), { recursive: true });
+    fs.writeFileSync(blockedPath, "not a directory");
+
+    let error: unknown;
+    try {
+      savePageScanImage(recipeId, 1, pngBytes());
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ScanImageError);
+    expect(error).toMatchObject({
+      code: "image-write-failed",
+      message: expect.stringContaining("Could not store scan page 1:"),
+    });
+  });
+
+  it("reports a source PDF write failure", () => {
+    const recipeId = 987652;
+    const blockedPath = path.join(getImagesDir(), String(recipeId));
+    fs.mkdirSync(getImagesDir(), { recursive: true });
+    fs.writeFileSync(blockedPath, "not a directory");
+
+    let error: unknown;
+    try {
+      saveSourcePdf(recipeId, pdfBytes());
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ScanImageError);
+    expect(error).toMatchObject({
+      code: "image-write-failed",
+      message: expect.stringContaining("Could not store the source PDF:"),
+    });
+  });
+
+  it("rejects an oversize page raster with 413", async () => {
+    const form = new FormData();
+    form.set("draft", JSON.stringify(pageDraft()));
+    form.set(
+      "page-1",
+      new File(
+        [new Uint8Array(Buffer.alloc(MAX_SCAN_UPLOAD_BYTES + 1))],
+        "page-1.png",
+        { type: "image/png" },
+      ),
+    );
+    const res = await handleSaveDraftRequest(formRequest(form));
+    expect(res.status).toBe(413);
+    expect((await res.json()) as { error: string }).toMatchObject({
+      error: "image-too-large",
+    });
+  });
+
+  it("rejects an oversize PDF with 413 and a non-PDF with 400", async () => {
+    const oversize = new FormData();
+    oversize.set("draft", JSON.stringify(pageDraft()));
+    oversize.set("page-1", pageFile(1));
+    oversize.set(
+      "pdf",
+      new File([new Uint8Array(Buffer.alloc(MAX_SCAN_UPLOAD_BYTES + 1))], "big.pdf"),
+    );
+    const bigRes = await handleSaveDraftRequest(formRequest(oversize));
+    expect(bigRes.status).toBe(413);
+    expect((await bigRes.json()) as { error: string }).toMatchObject({
+      error: "pdf-too-large",
+    });
+
+    const junk = new FormData();
+    junk.set("draft", JSON.stringify(pageDraft()));
+    junk.set("page-1", pageFile(1));
+    junk.set("pdf", new File([new Uint8Array(Buffer.from("plain"))], "x.pdf"));
+    const junkRes = await handleSaveDraftRequest(formRequest(junk));
+    expect(junkRes.status).toBe(400);
+    expect((await junkRes.json()) as { error: string }).toMatchObject({
+      error: "bad-pdf",
+    });
+  });
+
+  it("drops checked page/PDF bytes on a revise without writing them", async () => {
+    const { recipeId } = saveDraft(scanDraft("Revise with bytes"));
+    const form = new FormData();
+    form.set("draft", JSON.stringify({ ...pageDraft() }));
+    form.set("recipeId", String(recipeId));
+    form.set("page-1", pageFile(1));
+    form.set("pdf", new File([new Uint8Array(pdfBytes())], "source.pdf"));
+
+    const res = await handleSaveDraftRequest(formRequest(form));
+    expect(res.status).toBe(200);
+
+    // The revise validates the bytes (so junk would still 4xx) but the
+    // recipe keeps its own capture story: no page dir, no cover change.
+    const saved = loadDraft(recipeId);
+    expect(saved?.pages?.map((page) => page.imageFilename)).toEqual([
+      null,
+      null,
+    ]);
+    expect(saved?.imageFilename).toBeNull();
+    expect(
+      fs.existsSync(path.join(getImagesDir(), String(recipeId))),
+    ).toBe(false);
+  });
+});
+
 describe("POST /api/re-ocr (multipart-free transport)", () => {
   it("returns fresh OCR text for the stored capture", async () => {
     const { recipeId } = saveDraft(scanDraft("Endpoint re-ocr"));
@@ -418,5 +686,103 @@ describe("POST /api/re-ocr (multipart-free transport)", () => {
     ).catch((err: unknown) => err);
     expect(thrown).toBeInstanceOf(Response);
     expect((thrown as Response).status).toBe(401);
+  });
+});
+
+describe("GET /api/scan-images (ADR-0004 serving)", () => {
+  it("serves stored bytes through the route adapter and rejects its action", async () => {
+    const bytes = pngBytes(32);
+    const filename = savePageScanImage(12346, 1, bytes);
+    const directResponse = handleScanImageRequest(
+      authedRequest(`http://localhost/api/scan-images/${filename}`),
+      filename,
+    );
+    const routeResponse = await scanImagesLoader({
+      request: authedRequest(`http://localhost/api/scan-images/${filename}`),
+      params: { "*": filename },
+    } as unknown as ScanImagesRoute.LoaderArgs);
+
+    expect(directResponse.status).toBe(200);
+    expect(routeResponse.status).toBe(200);
+    expect(routeResponse.headers.get("content-type")).toBe(
+      directResponse.headers.get("content-type"),
+    );
+    const directBytes = Buffer.from(await directResponse.arrayBuffer());
+    expect(Buffer.from(await routeResponse.arrayBuffer())).toEqual(directBytes);
+    expect(directBytes).toEqual(bytes);
+
+    const actionResponse = await scanImagesAction();
+    expect(actionResponse.status).toBe(405);
+    expect(await actionResponse.json()).toMatchObject({
+      error: "method-not-allowed",
+    });
+  });
+
+  it("serves the exact stored bytes with the mapped content type and cache policy", async () => {
+    const bytes = pngBytes(32);
+    const filename = savePageScanImage(12345, 1, bytes);
+    const res = handleScanImageRequest(
+      authedRequest(`http://localhost/api/scan-images/${filename}`),
+      filename,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(res.headers.get("cache-control")).toBe("private, max-age=300");
+    expect(Buffer.from(await res.arrayBuffer()).equals(bytes)).toBe(true);
+  });
+
+  it("returns 404 JSON for a missing file", async () => {
+    const res = handleScanImageRequest(
+      authedRequest("http://localhost/api/scan-images/12345/missing.png"),
+      "12345/missing.png",
+    );
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "not-found" });
+  });
+
+  it.each(["../secret.png", "12/../../etc/passwd"])(
+    "returns 404 JSON for traversal filename %s",
+    async (filename) => {
+      const res = handleScanImageRequest(
+        authedRequest(`http://localhost/api/scan-images/${filename}`),
+        filename,
+      );
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "not-found" });
+    },
+  );
+
+  it("returns 405 JSON for an authenticated non-GET request", async () => {
+    const res = handleScanImageRequest(
+      authedRequest("http://localhost/api/scan-images/12345/page-1.png", {
+        method: "POST",
+      }),
+      "12345/page-1.png",
+    );
+
+    expect(res.status).toBe(405);
+    expect(await res.json()).toEqual({ error: "method-not-allowed" });
+  });
+
+  it("throws a 401 Response without a valid session cookie", async () => {
+    const url = "http://localhost/api/scan-images/12345/page-1.png";
+    await expect(
+      Promise.resolve().then(() =>
+        handleScanImageRequest(new Request(url), "12345/page-1.png"),
+      ),
+    ).rejects.toMatchObject({ status: 401 });
+
+    const invalidCookie = authCookie.replace(/=.*/, "=invalid");
+    await expect(
+      Promise.resolve().then(() =>
+        handleScanImageRequest(
+          new Request(url, { headers: { cookie: invalidCookie } }),
+          "12345/page-1.png",
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 401 });
   });
 });

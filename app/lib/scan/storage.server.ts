@@ -41,6 +41,8 @@ export class ScanImageError extends Error {
     public code:
       | "bad-image"
       | "image-too-large"
+      | "bad-pdf"
+      | "pdf-too-large"
       | "not-found"
       | "no-image"
       | "image-missing"
@@ -136,6 +138,73 @@ export function saveOriginalScanImage(recipeId: number, bytes: Buffer): string {
 }
 
 /**
+ * Validate an uploaded source PDF (ADR-0004). Throws ScanImageError when the
+ * bytes are empty, over the ceiling, or not a PDF (magic "%PDF-" at offset 0).
+ * The original is stored byte-for-byte, so nothing else about the bytes is
+ * judged.
+ */
+export function validatePdfUpload(bytes: Buffer): { bytes: number } {
+  if (bytes.byteLength === 0) {
+    throw new ScanImageError("bad-pdf", "The uploaded PDF is empty.");
+  }
+  if (bytes.byteLength > MAX_SCAN_UPLOAD_BYTES) {
+    throw new ScanImageError(
+      "pdf-too-large",
+      `PDFs must be ${MAX_SCAN_UPLOAD_MB}MB or smaller.`,
+    );
+  }
+  if (bytes.toString("ascii", 0, 5) !== "%PDF-") {
+    throw new ScanImageError("bad-pdf", "The uploaded file is not a PDF.");
+  }
+  return { bytes: bytes.byteLength };
+}
+
+/**
+ * Write one page raster to DATA_DIR/images/<id>/page-<n>.<ext>, reusing the
+ * image validation so a page raster and the original capture have identical
+ * rules. Returns the path relative to DATA_DIR/images/.
+ */
+export function savePageScanImage(
+  recipeId: number,
+  pageNo: number,
+  bytes: Buffer,
+): string {
+  const { ext } = validateScanUpload(bytes);
+  const dir = path.join(getImagesDir(), String(recipeId));
+  const filename = `page-${pageNo}.${ext}`;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, filename), bytes);
+  } catch (err) {
+    throw new ScanImageError(
+      "image-write-failed",
+      `Could not store scan page ${pageNo}: ${(err as Error).message}`,
+    );
+  }
+  return `${recipeId}/${filename}`;
+}
+
+/**
+ * Write the original scanned PDF to DATA_DIR/images/<id>/source.pdf,
+ * byte-for-byte: the untouched upload is provenance and must be retrievable
+ * later, even though no UI links to it yet (ADR-0004).
+ */
+export function saveSourcePdf(recipeId: number, bytes: Buffer): string {
+  validatePdfUpload(bytes);
+  const dir = path.join(getImagesDir(), String(recipeId));
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "source.pdf"), bytes);
+  } catch (err) {
+    throw new ScanImageError(
+      "image-write-failed",
+      `Could not store the source PDF: ${(err as Error).message}`,
+    );
+  }
+  return `${recipeId}/source.pdf`;
+}
+
+/**
  * Resolve a stored relative filename to an absolute path, refusing anything
  * that escapes DATA_DIR/images/. Returns null for a traversal attempt.
  */
@@ -167,6 +236,35 @@ export function deleteRecipeImage(recipeId: number): void {
     recursive: true,
     force: true,
   });
+}
+
+/** Content types for the retained artifacts the browser may display. */
+const STORED_CONTENT_TYPES: Record<string, string> = {
+  jpg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  pdf: "application/pdf",
+};
+
+/**
+ * Read a stored artifact — scan capture, page raster, or source PDF — for
+ * serving to the review screen. Returns null when the path escapes
+ * DATA_DIR/images/, the extension is unknown, or the file is absent.
+ */
+export function readStoredImage(
+  filename: string,
+): { bytes: Buffer; contentType: string } | null {
+  const filePath = resolveStoredImagePath(filename);
+  if (!filePath) return null;
+  let bytes: Buffer;
+  try {
+    bytes = fs.readFileSync(filePath);
+  } catch {
+    return null;
+  }
+  const contentType = STORED_CONTENT_TYPES[path.extname(filePath).slice(1).toLowerCase()];
+  if (!contentType) return null;
+  return { bytes, contentType };
 }
 
 /** One OCR pass over a capture: text plus engine confidence/timing. */

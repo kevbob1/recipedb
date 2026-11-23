@@ -30,7 +30,11 @@ export interface UseSaveDraftOptions {
 
 export interface UseSaveDraft {
   /** Persist review state and resolve with the recipe id. */
-  save: (draft: RecipeDraft, photoFile?: File | null) => Promise<number>;
+  save: (
+    draft: RecipeDraft,
+    photoFile?: File | null,
+    extras?: SaveDraftExtras,
+  ) => Promise<number>;
   /** Review's delete intent: remove the stored recipe and its capture. */
   remove: () => Promise<void>;
   saving: boolean;
@@ -38,25 +42,44 @@ export interface UseSaveDraft {
   clearError: () => void;
 }
 
+/**
+ * Multi-page scan uploads (ADR-0004): one raster per PDF page plus the
+ * original PDF, which the server stores byte-for-byte.
+ */
+export interface SaveDraftExtras {
+  /** Page rasters in page order; the server names them page-<n>. */
+  pageBlobs?: Blob[];
+  /** The original scanned PDF. */
+  pdfBlob?: Blob | null;
+}
+
 interface PostSaveBody {
   draft?: RecipeDraft;
   intent?: "delete";
   photoFile?: File | null;
+  extras?: SaveDraftExtras;
 }
 
 async function postSave(
   recipeId: number | undefined,
-  { draft, intent, photoFile }: PostSaveBody,
+  { draft, intent, photoFile, extras }: PostSaveBody,
 ): Promise<number> {
   let body: BodyInit;
   let headers: HeadersInit | undefined;
 
-  if (photoFile) {
-    // The Add flow's original capture rides with the draft untouched (#28).
+  const pageBlobs = extras?.pageBlobs ?? [];
+  const pdfBlob = extras?.pdfBlob ?? null;
+  if (photoFile || pageBlobs.length > 0 || pdfBlob) {
+    // The Add flow's original capture and multi-page uploads ride with the
+    // draft untouched (#28, ADR-0004).
     const form = new FormData();
     if (draft) form.set("draft", JSON.stringify(draft));
     if (recipeId !== undefined) form.set("recipeId", String(recipeId));
-    form.set("image", photoFile, photoFile.name || "capture.png");
+    if (photoFile) form.set("image", photoFile, photoFile.name || "capture.png");
+    pageBlobs.forEach((blob, index) => {
+      form.set(`page-${index + 1}`, blob, `page-${index + 1}.png`);
+    });
+    if (pdfBlob) form.set("pdf", pdfBlob, "source.pdf");
     body = form;
   } else {
     body = JSON.stringify({
@@ -97,11 +120,15 @@ export function useSaveDraft({
   const clearError = useCallback(() => setError(null), []);
 
   const save = useCallback(
-    async (draft: RecipeDraft, photoFile: File | null = null) => {
+    async (
+      draft: RecipeDraft,
+      photoFile: File | null = null,
+      extras?: SaveDraftExtras,
+    ) => {
       setSaving(true);
       setError(null);
       try {
-        return await postSave(recipeId, { draft, photoFile });
+        return await postSave(recipeId, { draft, photoFile, extras });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Couldn't save.");
         throw err;

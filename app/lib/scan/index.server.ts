@@ -28,9 +28,13 @@ export {
   ScanImageError,
   attachImageFilename,
   deleteRecipeImage,
+  readStoredImage,
   reocrRecipe,
   resolveStoredImagePath,
   saveOriginalScanImage,
+  savePageScanImage,
+  saveSourcePdf,
+  validatePdfUpload,
   validateScanUpload,
 } from "./storage.server";
 export type {
@@ -64,4 +68,4 @@ export {
 } from "./recognize-node.server";
 export type { OcrParamOverrides, OcrSession } from "./recognize-node.server";
 
-export { handleReOcrRequest } from "./http.server";
+export { handleReOcrRequest, handleScanImageRequest } from "./http.server";

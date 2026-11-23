@@ -88,6 +88,7 @@ describe("0001_scaling_quantity on an existing database", () => {
     expect(result.applied).toEqual([
       "0001_scaling_quantity",
       "0002_scan_image",
+      "0003_scan_pages",
     ]);
     expect(result.skipped).toEqual(["0000_init"]);
   });

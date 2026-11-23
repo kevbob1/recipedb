@@ -23,7 +23,7 @@ import { ScanImageError } from "../lib/scan/index.server";
 function saveFailure(err: unknown): Response {
   if (err instanceof ScanImageError) {
     const status =
-      err.code === "image-too-large"
+      err.code === "image-too-large" || err.code === "pdf-too-large"
         ? 413
         : err.code === "image-write-failed"
           ? 500

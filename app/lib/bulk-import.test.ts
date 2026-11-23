@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MAX_BULK_FILES,
+  appBulkSeams,
   bulkProgress,
   fallbackTitleFromName,
   formatBulkHeadline,
@@ -8,17 +9,39 @@ import {
   planBulkBatch,
   runBulkImport,
   summarizeBulkBatch,
+  toBulkInputs,
   updateBulkFile,
   type BulkFileInput,
   type BulkFileState,
+  type BulkPdfPage,
 } from "./bulk-import";
 import { MAX_SCAN_UPLOAD_BYTES } from "./scan/limits";
+import type { RecipeDraft } from "./draft";
+
+vi.mock("./pdf", () => ({
+  ingestPdfBlob: async (
+    file: File,
+    recognize: (blob: Blob) => Promise<string>,
+  ) => [
+    {
+      pageNo: 1,
+      text: await recognize(new Blob(["raster"])),
+      blob: new Blob(["raster"]),
+    },
+  ],
+}));
 
 function input(
   name: string,
   overrides: Partial<BulkFileInput> = {},
 ): BulkFileInput {
   return { name, size: 1024, type: "image/jpeg", ...overrides };
+}
+
+const PDF_HEAD = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]); // %PDF-
+
+function pdfPage(pageNo: number, text: string): BulkPdfPage {
+  return { pageNo, text, blob: new Blob([`page-${pageNo}`], { type: "image/png" }) };
 }
 
 describe("planBulkBatch", () => {
@@ -30,28 +53,46 @@ describe("planBulkBatch", () => {
       { id: "bulk-0", name: "a.jpg", status: "queued" },
       { id: "bulk-1", name: "b.png", status: "queued" },
     ]);
-    // The caller maps id -> file to run OCR and upload the original bytes.
+    // The caller maps id -> file to run OCR and upload the original bytes;
+    // kind is decided at plan time and never re-guessed at run.
     expect(plan.accepted).toEqual([
-      { id: "bulk-0", file: files[0] },
-      { id: "bulk-1", file: files[1] },
+      { id: "bulk-0", file: files[0], kind: "image" },
+      { id: "bulk-1", file: files[1], kind: "image" },
     ]);
     expect(plan.rejected).toEqual([]);
   });
 
   it("rejects non-image files but keeps the rest of the batch", () => {
     const plan = planBulkBatch([
-      input("notes.pdf", { type: "application/pdf" }),
+      input("notes.txt", { type: "text/plain" }),
       input("a.jpg"),
     ]);
 
     expect(plan.states.map((state) => state.name)).toEqual(["a.jpg"]);
     expect(plan.rejected).toEqual([
       {
-        name: "notes.pdf",
+        name: "notes.txt",
         code: "not-image",
-        message: "notes.pdf isn't an image file.",
+        message: "notes.txt isn't an image or PDF file.",
       },
     ]);
+  });
+
+  it("accepts a scanned PDF by its mime type", () => {
+    const plan = planBulkBatch([input("scan.pdf", { type: "application/pdf" })]);
+    expect(plan.accepted).toEqual([
+      { id: "bulk-0", file: plan.accepted[0].file, kind: "pdf" },
+    ]);
+    expect(plan.rejected).toEqual([]);
+  });
+
+  it("sniffs an untyped pick's head bytes for the PDF magic", () => {
+    const untypedPdf = input("untyped.pdf", { type: "", head: PDF_HEAD });
+    const untypedImage = input("IMG_0042", { type: "" });
+
+    const plan = planBulkBatch([untypedPdf, untypedImage]);
+    expect(plan.accepted.map((file) => file.kind)).toEqual(["pdf", "image"]);
+    expect(plan.rejected).toEqual([]);
   });
 
   it("trusts a pick when the browser reports no mime type", () => {
@@ -396,7 +437,7 @@ describe("runBulkImport", () => {
   it("reports up-front rejections in the summary without running them", async () => {
     const plan = planBulkBatch([
       input("ok.jpg"),
-      input("bad.pdf", { type: "application/pdf" }),
+      input("bad.txt", { type: "text/plain" }),
     ]);
     const recognized: string[] = [];
 
@@ -415,7 +456,7 @@ describe("runBulkImport", () => {
       saved: 1,
       failed: 1,
       savedRecipes: [{ name: "ok.jpg", recipeId: 1 }],
-      failures: [{ name: "bad.pdf", error: "bad.pdf isn't an image file." }],
+      failures: [{ name: "bad.txt", error: "bad.txt isn't an image or PDF file." }],
     });
   });
 
@@ -441,5 +482,158 @@ describe("runBulkImport", () => {
     });
 
     expect(result.states[0].error).toBe("Import failed.");
+  });
+});
+
+describe("runBulkImport PDFs (ADR-0004)", () => {
+  function pdfPlan(name = "scan.pdf"): ReturnType<typeof planBulkBatch> {
+    return planBulkBatch([input(name, { type: "application/pdf" })]);
+  }
+
+  it("turns one PDF into ONE draft with per-page text and a pdf upload", async () => {
+    const plan = pdfPlan();
+    let savedDraft: RecipeDraft | null = null;
+    let savedUpload: unknown = null;
+    let savedFile: unknown = null;
+
+    const result = await runBulkImport({
+      plan,
+      recognize: async () => "never",
+      ingestPdf: async () => [
+        pdfPage(1, "Grandma's pie\n2 cups flour"),
+        pdfPage(2, "Mix and bake"),
+      ],
+      save: async (draft, file, upload) => {
+        savedDraft = draft;
+        savedFile = file;
+        savedUpload = upload;
+        return 1;
+      },
+    });
+
+    expect(result.states[0]).toMatchObject({ name: "scan.pdf", status: "done", recipeId: 1 });
+    expect(savedDraft).toMatchObject({
+      sourceType: "scan",
+      rawOcrText: "Grandma's pie\n2 cups flour\n\nMix and bake",
+      pages: [
+        { pageNo: 1, text: "Grandma's pie\n2 cups flour" },
+        { pageNo: 2, text: "Mix and bake" },
+      ],
+    });
+    expect(savedUpload).toMatchObject({ kind: "pdf" });
+    expect(
+      (savedUpload as { pages: BulkPdfPage[] }).pages.map((p) => p.pageNo),
+    ).toEqual([1, 2]);
+    expect(savedFile).toMatchObject({ name: "scan.pdf" });
+  });
+
+  it("refuses a PDF over the 5-page cap", async () => {
+    const plan = pdfPlan();
+    let saveCalls = 0;
+
+    const result = await runBulkImport({
+      plan,
+      recognize: async () => "never",
+      ingestPdf: async () =>
+        Array.from({ length: 6 }, (_, i) => pdfPage(i + 1, `page ${i + 1}`)),
+      save: async () => {
+        saveCalls += 1;
+        return 1;
+      },
+    });
+
+    expect(result.states[0]).toMatchObject({
+      status: "error",
+      error: "That PDF has 6 pages — PDFs are limited to 5 pages. Split it and import the parts.",
+    });
+    expect(saveCalls).toBe(0);
+  });
+
+  it("refuses a PDF with no readable pages", async () => {
+    const plan = pdfPlan();
+
+    const result = await runBulkImport({
+      plan,
+      recognize: async () => "never",
+      ingestPdf: async () => [],
+      save: async () => 1,
+    });
+
+    expect(result.states[0]).toMatchObject({
+      status: "error",
+      error: "That PDF has no pages to read.",
+    });
+  });
+
+  it("reports a clear failure when no PDF seam is wired", async () => {
+    const plan = pdfPlan();
+
+    const result = await runBulkImport({
+      plan,
+      recognize: async () => "never",
+      save: async () => 1,
+    });
+
+    expect(result.states[0]).toMatchObject({
+      status: "error",
+      error: "This importer can't read PDFs — pick images instead.",
+    });
+  });
+});
+
+describe("toBulkInputs", () => {
+  it("sniffs head bytes only for untyped picks", async () => {
+    const typed = new File([PDF_HEAD], "scan.pdf", { type: "application/pdf" });
+    const untyped = new File([PDF_HEAD], "IMG_0042", { type: "" });
+
+    const inputs = await toBulkInputs([typed, untyped]);
+
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0]).toMatchObject({ name: "scan.pdf", type: "application/pdf" });
+    expect(inputs[0].head).toBeUndefined();
+    expect(inputs[1].head).toEqual(PDF_HEAD);
+  });
+});
+
+describe("appBulkSeams", () => {
+  it("maps an image upload to the plain save call", async () => {
+    const file = new File(["jpeg-bytes"], "a.jpg", { type: "image/jpeg" });
+    const save = vi.fn(async () => 7);
+    const seams = appBulkSeams(vi.fn(async () => "text"), save);
+
+    await seams.save({} as RecipeDraft, { file } as never, { kind: "image" });
+    expect(save).toHaveBeenCalledWith(expect.anything(), file);
+  });
+
+  it("maps a pdf upload to page rasters plus the original PDF", async () => {
+    const file = new File(["%PDF-1.4"], "scan.pdf", { type: "application/pdf" });
+    const page = pdfPage(1, "text");
+    const save = vi.fn(async () => 7);
+    const seams = appBulkSeams(vi.fn(async () => "text"), save);
+
+    await seams.save({} as RecipeDraft, { file } as never, {
+      kind: "pdf",
+      pages: [page],
+    });
+    expect(save).toHaveBeenCalledWith(expect.anything(), null, {
+      pageBlobs: [page.blob],
+      pdfBlob: file,
+    });
+  });
+
+  it("routes PDF ingestion through the lazy pdf seam and the same OCR", async () => {
+    const recognize = vi.fn(async () => "page text");
+    const seams = appBulkSeams(
+      recognize,
+      vi.fn(async () => 7),
+    );
+    const file = new File(["%PDF-1.4"], "scan.pdf", { type: "application/pdf" });
+
+    const pages = await seams.ingestPdf?.({ file } as never);
+    expect(pages).toEqual([
+      { pageNo: 1, text: "page text", blob: expect.any(Blob) },
+    ]);
+    // The injected recognizer receives the rendered page raster, not the PDF.
+    expect(recognize).toHaveBeenCalledWith(expect.any(Blob));
   });
 });

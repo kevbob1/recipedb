@@ -121,6 +121,25 @@ describe("createDraft — scan adapter", () => {
     expect(draft.imageFilename).toBeNull();
     expect(draft.rawOcrText).toBe("Anything");
   });
+
+  it("maps multi-page scan input into the draft's pages, nulling absent filenames", () => {
+    const draft = createDraft({
+      kind: "scan",
+      text: "page one\n\npage two",
+      pages: [
+        { pageNo: 2, text: "page two" },
+        { pageNo: 1, imageFilename: "", text: "page one" },
+      ],
+    });
+
+    expect(draft.sourceType).toBe("scan");
+    // Pages ride through as given (ADR-0002: the caller owns page identity);
+    // prepareDraft does the later sort for persistence.
+    expect(draft.pages).toEqual([
+      { pageNo: 2, imageFilename: null, text: "page two" },
+      { pageNo: 1, imageFilename: null, text: "page one" },
+    ]);
+  });
 });
 
 describe("createDraft — manual adapter", () => {

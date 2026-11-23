@@ -38,6 +38,22 @@ _Avoid_: Image attachment
 An import path where the Provenance is a retained photograph of a recipe (cookbook page, card) rather than a URL. The Scan module owns the whole path — capture storage, image preprocessing, text recognition — behind one interface; camera-decode and server-decode are adapters behind its seam, not separate modules.
 _Avoid_: OCR pipeline, scanner service
 
+**Page**:
+One rasterized image of a scanned document. A scanned PDF becomes one Page per document page, all belonging to a single Recipe — a multi-page Scan is one long document, never several Recipes.
+_Avoid_: Sheet, image file, attachment
+
+**Original**:
+The byte-for-byte retained upload behind a Scan: one image per Page, plus the whole source PDF when the Scan came from one. Kept untouched so it can be re-read or re-OCR'd later; not surfaced in the UI yet.
+_Avoid_: Source file, attachment, raw file
+
+**Training sample**:
+The captured pair for one Page: its image, the raw OCR text read from it, and the corrected text a person accepted at Review. Written when a Page's text is accepted; feeds OCR training. Drafts that were never reviewed capture the image and raw text only.
+_Avoid_: Dataset row, ground truth, training data
+
+**Backfill**:
+Pushing an already-kept Scan recipe back through recognition: re-OCR overwrites its raw text and parsed fields. Review afterwards is optional — fresher recognition wins over preserving prior corrections.
+_Avoid_: Migration, re-import
+
 ### Recipe content
 
 **Ingredient line**:

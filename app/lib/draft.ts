@@ -100,6 +100,27 @@ export interface DraftStep {
 }
 
 /**
+ * One page of a multi-page scan (ADR-0004, the GLOSSARY.md Page term).
+ *
+ * `pageNo` is 1-based and unique within the draft — it is the page's identity
+ * (recipe_pages has UNIQUE(recipe_id, page_no)). `imageFilename` is relative
+ * to DATA_DIR/images/ and MAY name a capture that has not been uploaded yet;
+ * the save path never checks that the file exists. `text` is that page's raw
+ * OCR text as edited at review.
+ */
+export interface DraftPage {
+  pageNo: number;
+  /**
+   * Path of the page raster, relative to DATA_DIR/images/ (e.g.
+   * "12/page-1.png"). Empty or null at draft time — the server assigns the
+   * real filename when the page bytes are uploaded (the DB column is
+   * nullable for exactly this gap).
+   */
+  imageFilename: string | null;
+  text: string;
+}
+
+/**
  * The draft. One in-flight editable recipe.
  *
  * `sourceType` mirrors the GLOSSARY.md Provenance source-type enum and the
@@ -133,6 +154,14 @@ export interface RecipeDraft {
    * Deleted only when the recipe is deleted.
    */
   imageFilename?: string | null;
+  /**
+   * Per-page provenance for multi-page scans (ADR-0004), persisted to
+   * recipe_pages. Absent or empty for single-image scans and every draft made
+   * before pages existed — those flows behave exactly as they always have.
+   * The page images themselves arrive with the PDF ingestion phase; the
+   * filenames here may reference them ahead of time without breaking saves.
+   */
+  pages?: DraftPage[];
   /** Whether the recipe is a favorite. */
   favorite: boolean;
   ingredients: DraftIngredient[];

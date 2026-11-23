@@ -23,7 +23,12 @@
 
 import type { RecipeDraft } from "./draft";
 import { createDraft } from "./import";
-import { MAX_SCAN_UPLOAD_BYTES, MAX_SCAN_UPLOAD_MB } from "./scan/limits";
+import type { SaveDraftExtras } from "./use-save-draft";
+import {
+  MAX_SCAN_UPLOAD_BYTES,
+  MAX_SCAN_UPLOAD_MB,
+  pdfPageLimitMessage,
+} from "./scan/limits";
 
 /**
  * How many images one batch may contain. Above this the extras are rejected up
@@ -37,7 +42,16 @@ export interface BulkFileInput {
   name: string;
   size: number;
   type: string;
+  /**
+   * First bytes of the file, supplied when the browser reported no mime type.
+   * Used to sniff the %PDF- magic so an untyped scanned PDF is not OCR'd as
+   * an image. Optional: without it an untyped pick is trusted as an image.
+   */
+  head?: Uint8Array;
 }
+
+/** What a picked file turned out to be. */
+export type BulkFileKind = "image" | "pdf";
 
 /** Where one image is in the batch. Ordered: queued -> ocr -> saving -> done. */
 export type BulkFileStatus = "queued" | "ocr" | "saving" | "done" | "error";
@@ -57,6 +71,8 @@ export interface BulkFileState {
 export interface BulkAcceptedFile<T extends BulkFileInput> {
   id: string;
   file: T;
+  /** Decided at plan time (mime type + %PDF- sniff), never re-guessed at run. */
+  kind: BulkFileKind;
 }
 
 /** Why a picked file never entered the queue. */
@@ -82,11 +98,32 @@ function labelFor(file: BulkFileInput): string {
   return file.name.trim() || "Unnamed image";
 }
 
-function isImageType(type: string | undefined): boolean {
-  // Some browsers report an empty type for camera/HEIC files; the file input
-  // already filters on accept="image/*", so trust the pick rather than block it.
-  const normalized = (type ?? "").toLowerCase();
-  return normalized === "" || normalized.startsWith("image/");
+/** %PDF- — the magic every PDF file starts with (RFC 8118). */
+function hasPdfMagic(head: Uint8Array | undefined): boolean {
+  return (
+    head !== undefined &&
+    head.length >= 5 &&
+    head[0] === 0x25 && // %
+    head[1] === 0x50 && // P
+    head[2] === 0x44 && // D
+    head[3] === 0x46 && // F
+    head[4] === 0x2d //   -
+  );
+}
+
+/**
+ * What a picked file is: an image, a PDF, or nothing this flow accepts.
+ * Some browsers report an empty type for camera/HEIC files; the file input
+ * already filters on accept="image/*,application/pdf", so trust the pick
+ * rather than block it — unless its head bytes say %PDF-, which makes an
+ * untyped pick a scanned PDF (ADR-0004).
+ */
+function classifyKind(file: BulkFileInput): BulkFileKind | null {
+  const normalized = (file.type ?? "").toLowerCase();
+  if (normalized === "application/pdf") return "pdf";
+  if (normalized.startsWith("image/")) return "image";
+  if (normalized === "") return hasPdfMagic(file.head) ? "pdf" : "image";
+  return null;
 }
 
 /**
@@ -110,11 +147,12 @@ export function planBulkBatch<T extends BulkFileInput>(
       });
       return;
     }
-    if (!isImageType(file.type)) {
+    const kind = classifyKind(file);
+    if (kind === null) {
       plan.rejected.push({
         name,
         code: "not-image",
-        message: `${name} isn't an image file.`,
+        message: `${name} isn't an image or PDF file.`,
       });
       return;
     }
@@ -129,7 +167,7 @@ export function planBulkBatch<T extends BulkFileInput>(
 
     const id = `bulk-${index}`;
     plan.states.push({ id, name, status: "queued" });
-    plan.accepted.push({ id, file });
+    plan.accepted.push({ id, file, kind });
   });
 
   return plan;
@@ -239,12 +277,38 @@ function failureMessage(err: unknown): string {
   return "Import failed.";
 }
 
+/** One rasterized page of a scanned PDF: its OCR text and the PNG to retain. */
+export interface BulkPdfPage {
+  pageNo: number;
+  /** Raw OCR text read from this page, verbatim. */
+  text: string;
+  /** The rendered page raster, uploaded and retained with the recipe. */
+  blob: Blob;
+}
+
+/**
+ * What rides along with the save beyond the draft. An image save carries the
+ * picked file itself as the capture; a PDF save carries the per-page rasters
+ * and the original PDF bytes (ADR-0004 provenance).
+ */
+export type BulkUpload =
+  | { kind: "image" }
+  | { kind: "pdf"; pages: BulkPdfPage[] };
+
 export interface RunBulkImportOptions<T extends BulkFileInput> {
   plan: BulkPlan<T>;
   /** OCR one image. In the app: `recognizeText`. */
   recognize: (file: T) => Promise<string>;
-  /** Persist one draft (and its original bytes). In the app: `useSaveDraft`. */
-  save: (draft: RecipeDraft, file: T) => Promise<number>;
+  /**
+   * Rasterize + OCR one PDF into its pages (client-side pdf.js + the same
+   * `recognizeText`). Required to run a batch that contains PDFs.
+   */
+  ingestPdf?: (file: T) => Promise<BulkPdfPage[]>;
+  /**
+   * Persist one draft and its retained bytes. In the app: `useSaveDraft`.
+   * `upload` says which bytes ride along (see BulkUpload).
+   */
+  save: (draft: RecipeDraft, file: T, upload: BulkUpload) => Promise<number>;
   /** Called with a fresh array after every transition, for React state. */
   onChange?: (states: BulkFileState[]) => void;
 }
@@ -255,10 +319,93 @@ export interface BulkRunResult {
 }
 
 /**
+ * Enrich picked Files with the head bytes the %PDF- sniff needs. Only untyped
+ * picks pay the read — a typed `application/pdf` needs no sniff.
+ */
+export async function toBulkInputs(
+  files: readonly File[],
+): Promise<Array<BulkFileInput & { file: File }>> {
+  const out: Array<BulkFileInput & { file: File }> = [];
+  for (const file of files) {
+    const input: BulkFileInput & { file: File } = {
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      file,
+    };
+    if ((file.type ?? "") === "") {
+      input.head = new Uint8Array(await file.slice(0, 5).arrayBuffer());
+    }
+    out.push(input);
+  }
+  return out;
+}
+
+/** The save seam this module wires into (structural type; keeps tests fake). */
+export type BulkSaveSeam = (
+  draft: RecipeDraft,
+  photoFile: File | null,
+  extras?: SaveDraftExtras,
+) => Promise<number>;
+
+/**
+ * The app's runner seams for the Add flow: browser OCR for images, lazy
+ * pdf.js rasterization + OCR for PDFs (the dynamic import keeps pdfjs out of
+ * the SSR/server-boot graph), and per-kind byte uploads through the save
+ * hook — page rasters + the original PDF for a scanned PDF, the picked file
+ * itself for an image (ADR-0004).
+ */
+export function appBulkSeams(
+  recognizeText: (blob: Blob) => Promise<string>,
+  save: BulkSaveSeam,
+): Pick<
+  RunBulkImportOptions<BulkFileInput & { file: File }>,
+  "recognize" | "ingestPdf" | "save"
+> {
+  return {
+    recognize: (pick) => recognizeText(pick.file),
+    ingestPdf: async (pick) => {
+      const { ingestPdfBlob } = await import("../lib/pdf");
+      return ingestPdfBlob(pick.file, (blob) =>
+        recognizeText(new File([blob], "page.png", { type: "image/png" })),
+      );
+    },
+    save: (draft, pick, upload) =>
+      upload.kind === "pdf"
+        ? save(draft, null, {
+            pageBlobs: upload.pages.map((page) => page.blob),
+            pdfBlob: pick.file,
+          })
+        : save(draft, pick.file),
+  };
+}
+
+/**
  * Run the queue: recognize -> draft -> save, one image at a time. A failure is
  * recorded on that image and the batch continues; the returned summary accounts
  * for every picked file, rejections included.
  */
+/**
+ * One PDF -> its pages, refused above the ADR-0004 cap with a clear message.
+ * The rasterizer refuses the same way; this keeps the runner safe with any
+ * `ingestPdf` implementation.
+ */
+async function ingestPdfPages<T extends BulkFileInput>(
+  options: RunBulkImportOptions<T>,
+  file: T,
+): Promise<BulkPdfPage[]> {
+  if (!options.ingestPdf) {
+    throw new Error("This importer can't read PDFs — pick images instead.");
+  }
+  const pages = await options.ingestPdf(file);
+  const overCap = pdfPageLimitMessage(pages.length);
+  if (overCap) throw new Error(overCap);
+  if (pages.length === 0) {
+    throw new Error("That PDF has no pages to read.");
+  }
+  return pages;
+}
+
 export async function runBulkImport<T extends BulkFileInput>(
   options: RunBulkImportOptions<T>,
 ): Promise<BulkRunResult> {
@@ -267,14 +414,36 @@ export async function runBulkImport<T extends BulkFileInput>(
 
   emit();
 
-  for (const { id, file } of options.plan.accepted) {
+  for (const { id, file, kind } of options.plan.accepted) {
     states = updateBulkFile(states, id, { status: "ocr" });
     emit();
 
     try {
-      const text = await options.recognize(file);
-      // The one Draft factory (ADR-0002) stamps scan provenance and confidence.
-      const draft = createDraft({ kind: "scan", text });
+      // The one Draft factory (ADR-0002) stamps scan provenance and
+      // confidence. A PDF becomes ONE draft (ADR-0004): structured fields
+      // parse from the concatenated page texts through the same scan
+      // adapter — no forked parser — and the raw per-page text stays in
+      // draft.pages. Page rasters ride to the save with the original bytes.
+      let draft: RecipeDraft;
+      let upload: BulkUpload;
+      if (kind === "pdf") {
+        const pages = await ingestPdfPages(options, file);
+        const text = pages.map((page) => page.text).join("\n\n");
+        draft = createDraft({
+          kind: "scan",
+          text,
+          pages: pages.map((page) => ({
+            pageNo: page.pageNo,
+            imageFilename: "",
+            text: page.text,
+          })),
+        });
+        upload = { kind: "pdf", pages };
+      } else {
+        const text = await options.recognize(file);
+        draft = createDraft({ kind: "scan", text });
+        upload = { kind: "image" };
+      }
       if (!draft.title.trim()) {
         draft.title = fallbackTitleFromName(file.name);
         draft.titleConfidence = "warn";
@@ -283,7 +452,7 @@ export async function runBulkImport<T extends BulkFileInput>(
       states = updateBulkFile(states, id, { status: "saving" });
       emit();
 
-      const recipeId = await options.save(draft, file);
+      const recipeId = await options.save(draft, file, upload);
       states = updateBulkFile(states, id, { status: "done", recipeId });
     } catch (err) {
       states = updateBulkFile(states, id, {

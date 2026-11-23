@@ -15,6 +15,8 @@ export default [
   route("api/save-draft", "routes/api.save-draft.ts"),
   // Explicit re-OCR against a retained scan capture (#28).
   route("api/re-ocr", "routes/api.re-ocr.ts"),
+  // Read-only serving of retained scan artifacts (ADR-0004 phase 4).
+  route("api/scan-images/*", "routes/api.scan-images.$.ts"),
   // Read-only single-page read view (#25). The home list lands here; review
   // and cook are one tap away from it.
   route("recipes/:id", "routes/recipes.$id.tsx"),

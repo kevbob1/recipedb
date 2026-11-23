@@ -6,3 +6,5 @@ data
 coverage
 *.log
 .DS_Store
+.codegraph/
+_pdf_scans/

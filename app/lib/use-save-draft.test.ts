@@ -152,6 +152,41 @@ describe("save", () => {
     expect(sent.type).toBe("image/png");
   });
 
+  it("sends multipart for multi-page extras without an image", async () => {
+    mocks.fetch.mockResolvedValue(jsonResponse({ recipeId: 12 }));
+    mount();
+    const page1 = new Blob(["raster-1"]);
+    const page2 = new Blob(["raster-2"]);
+    const pdf = new Blob(["%PDF-1.4"]);
+
+    await hook.save(draft(), null, { pageBlobs: [page1, page2], pdfBlob: pdf });
+
+    const init = mocks.fetch.mock.calls[0]![1]!;
+    expect(init.headers).toBeUndefined();
+    const form = init.body as FormData;
+    expect(form.get("image")).toBeNull();
+    const sent1 = form.get("page-1") as File;
+    const sent2 = form.get("page-2") as File;
+    expect(sent1.name).toBe("page-1.png");
+    expect(sent2.name).toBe("page-2.png");
+    expect(form.get("pdf")).not.toBeNull();
+  });
+
+  it("combines the photo capture with page extras", async () => {
+    mocks.fetch.mockResolvedValue(jsonResponse({ recipeId: 13 }));
+    mount();
+    const file = new File([new Uint8Array([1])], "capture.png", {
+      type: "image/png",
+    });
+
+    await hook.save(draft(), file, { pageBlobs: [new Blob(["r1"])] });
+
+    const form = mocks.fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("image")).not.toBeNull();
+    expect(form.get("page-1")).not.toBeNull();
+    expect(form.get("pdf")).toBeNull();
+  });
+
   it("defaults the multipart filename for an unnamed capture", async () => {
     mocks.fetch.mockResolvedValue(jsonResponse({ recipeId: 9 }));
     mount();

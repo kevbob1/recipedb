@@ -13,7 +13,11 @@
  * the scan module. `SaveError` lives here because both the validator and the
  * store throw it; draft-store.server.ts re-exports it for existing callers.
  */
-import type { NewIngredientLine, NewStep } from "../db/schema.server";
+import type {
+  NewIngredientLine,
+  NewRecipePage,
+  NewStep,
+} from "../db/schema.server";
 import { CATEGORIES, type Category } from "./categories";
 import type { RecipeDraft } from "./draft";
 import { fromText } from "./ingredient-line";
@@ -54,6 +58,14 @@ export interface PersistedDraft {
   ingredients: Omit<NewIngredientLine, "recipeId">[];
   steps: Omit<NewStep, "recipeId">[];
   tags: string[];
+  /**
+   * Per-page rows for multi-page scans (ADR-0004). Omitted when the draft
+   * carries no pages, so single-image and legacy drafts persist exactly as
+   * they did before recipe_pages existed. `pageNo` is the page's identity and
+   * is never renumbered; rows come out sorted by it — the order loadDraft
+   * recomposes pages in — so save -> load is a fixed point.
+   */
+  pages?: Omit<NewRecipePage, "recipeId">[];
 }
 
 /**
@@ -142,7 +154,14 @@ export function prepareDraft(draft: RecipeDraft): PersistedDraft {
     return out;
   })();
 
-  return {
+  // Pages are identity-keyed provenance (page_no is the page's identity), not
+  // positions: the caller owns the numbering, so it is validated and sorted,
+  // never renumbered. An absent or empty page list contributes no rows and no
+  // `pages` key — a single-image draft persists exactly as it did before
+  // recipe_pages existed (ADR-0004).
+  const pages = preparePages(draft.pages);
+
+  const persisted: PersistedDraft = {
     fields: {
       title,
       category: draft.category as Category,
@@ -157,6 +176,66 @@ export function prepareDraft(draft: RecipeDraft): PersistedDraft {
     steps,
     tags: tagLabels,
   };
+  if (pages.length > 0) persisted.pages = pages;
+  return persisted;
+}
+
+/**
+ * Validate + normalize the optional per-page rows (ADR-0004) into DB-ready
+ * child rows. `page_no` is the page's identity — 1-based, an integer, unique
+ * within the draft — and is never renumbered the way ingredient/step
+ * positions are. Text and filenames are trimmed like every other field;
+ * `image_filename` may name a capture that is not uploaded yet (the page-image
+ * upload lands with the PDF ingestion phase) and nothing here touches the
+ * filesystem. Rows come out sorted by page number, so save -> load is a fixed
+ * point. Throws SaveError("bad-draft") for a non-array list, a non-object
+ * entry, a bad or duplicate page number, or non-string text/filename.
+ */
+function preparePages(pages: unknown): Omit<NewRecipePage, "recipeId">[] {
+  if (pages === undefined || pages === null) return [];
+  if (!Array.isArray(pages)) {
+    throw new SaveError("bad-draft", "Draft pages must be an array.");
+  }
+  const seen = new Set<number>();
+  const out: Omit<NewRecipePage, "recipeId">[] = [];
+  for (const page of pages) {
+    if (page === null || typeof page !== "object") {
+      throw new SaveError("bad-draft", "Each draft page must be an object.");
+    }
+    const entry = page as Record<string, unknown>;
+    const pageNo = entry.pageNo;
+    const imageFilename = entry.imageFilename;
+    const text = entry.text;
+    if (typeof pageNo !== "number" || !Number.isInteger(pageNo) || pageNo < 1) {
+      throw new SaveError(
+        "bad-draft",
+        `Page number must be a positive integer (got ${String(pageNo)}).`,
+      );
+    }
+    if (seen.has(pageNo)) {
+      throw new SaveError("bad-draft", `Duplicate page number ${pageNo}.`);
+    }
+    if (typeof text !== "string") {
+      throw new SaveError("bad-draft", `Page ${pageNo} text must be a string.`);
+    }
+    if (
+      imageFilename !== undefined &&
+      imageFilename !== null &&
+      typeof imageFilename !== "string"
+    ) {
+      throw new SaveError(
+        "bad-draft",
+        `Page ${pageNo} image filename must be a string.`,
+      );
+    }
+    seen.add(pageNo);
+    out.push({
+      pageNo,
+      imageFilename: trimOnly(imageFilename),
+      rawOcrText: trimOnly(text),
+    });
+  }
+  return out.sort((a, b) => a.pageNo - b.pageNo);
 }
 
 /**
@@ -164,11 +243,30 @@ export function prepareDraft(draft: RecipeDraft): PersistedDraft {
  * JSON string from multipart, an already-parsed object from JSON bodies), not
  * a decoded draft: decoding is a validity decision and belongs to
  * `validateSaveCommand`.
+ *
+ * `pageFiles` and `pdfBytes` (new saves only, ADR-0004) are the bytes that
+ * back a multi-page scan: one uploaded raster per page plus the untouched
+ * source PDF. Structural validation of `pageNo` happens here; byte validation
+ * stays with the storage seam (scan/storage.server.ts).
  */
 export type SaveCommand =
-  | { kind: "new"; draft: unknown; imageBytes?: Buffer | null }
+  | {
+      kind: "new";
+      draft: unknown;
+      imageBytes?: Buffer | null;
+      pageFiles?: SavePageFile[];
+      pdfBytes?: Buffer | null;
+    }
   | { kind: "revise"; recipeId: number; draft: unknown }
   | { kind: "delete"; recipeId: number };
+
+/** One uploaded page raster: the page it belongs to, and its untouched bytes. */
+export interface SavePageFile {
+  /** 1-based page number within the source document (the page's identity). */
+  pageNo: number;
+  /** The uploaded capture bytes; validated by the storage seam, not here. */
+  bytes: Buffer;
+}
 
 /**
  * A command whose validity has been settled: the draft is decoded, normalized,
@@ -176,7 +274,13 @@ export type SaveCommand =
  * The store only has to sequence storage from here.
  */
 export type ValidatedSaveCommand =
-  | { kind: "new"; prepared: PersistedDraft; imageBytes: Buffer | null }
+  | {
+      kind: "new";
+      prepared: PersistedDraft;
+      imageBytes: Buffer | null;
+      pageFiles: SavePageFile[];
+      pdfBytes: Buffer | null;
+    }
   | { kind: "revise"; recipeId: number; prepared: PersistedDraft }
   | { kind: "delete"; recipeId: number };
 
@@ -198,6 +302,42 @@ function validateDraft(payload: unknown): PersistedDraft {
 }
 
 /**
+ * Structural check of the optional per-page uploads (ADR-0004): a list of
+ * `{ pageNo, bytes }` with positive, unique, integer page numbers. Byte
+ * content is the storage seam's decision (scan/storage.server.ts), so this
+ * never looks at `bytes` — it exists so a malformed page number cannot reach
+ * the filesystem. Throws SaveError("bad-draft") for a non-array list, a
+ * non-object entry, a bad or duplicate page number.
+ */
+function validatePageFiles(files: unknown): SavePageFile[] {
+  if (files === undefined || files === null) return [];
+  if (!Array.isArray(files)) {
+    throw new SaveError("bad-draft", "Page uploads must be an array.");
+  }
+  const seen = new Set<number>();
+  const out: SavePageFile[] = [];
+  for (const file of files) {
+    if (file === null || typeof file !== "object") {
+      throw new SaveError("bad-draft", "Each page upload must be an object.");
+    }
+    const entry = file as { pageNo: unknown; bytes: unknown };
+    const pageNo = entry.pageNo;
+    if (typeof pageNo !== "number" || !Number.isInteger(pageNo) || pageNo < 1) {
+      throw new SaveError(
+        "bad-draft",
+        `Page number must be a positive integer (got ${String(pageNo)}).`,
+      );
+    }
+    if (seen.has(pageNo)) {
+      throw new SaveError("bad-draft", `Duplicate page upload ${pageNo}.`);
+    }
+    seen.add(pageNo);
+    out.push({ pageNo, bytes: entry.bytes as Buffer });
+  }
+  return out.sort((a, b) => a.pageNo - b.pageNo);
+}
+
+/**
  * The pure validation step: SaveCommand -> ValidatedSaveCommand.
  *
  * Every reason a save can be rejected for its input is decided here — unknown
@@ -212,6 +352,8 @@ export function validateSaveCommand(command: SaveCommand): ValidatedSaveCommand 
         kind: "new",
         prepared: validateDraft(command.draft),
         imageBytes: command.imageBytes ?? null,
+        pageFiles: validatePageFiles(command.pageFiles),
+        pdfBytes: command.pdfBytes ?? null,
       };
     case "revise":
       return {

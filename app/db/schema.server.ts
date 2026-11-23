@@ -162,6 +162,70 @@ export const tags = sqliteTable(
   ],
 );
 
+/**
+ * Per-page provenance for multi-page scans (ADR-0004): the per-page draft
+ * store. One row per page of a scanned document, written on save and replaced
+ * with the other child rows. `page_no` is 1-based and unique per recipe; it is
+ * the page's identity. `image_filename` is relative to DATA_DIR/images/
+ * (e.g. "<recipeId>/page-1.png") and is nullable — it may name a capture that
+ * has not been uploaded yet (the page-image upload lands with the PDF
+ * ingestion phase). `raw_ocr_text` is that page's OCR text as edited at
+ * review.
+ */
+export const recipePages = sqliteTable(
+  "recipe_pages",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    recipeId: integer("recipe_id")
+      .notNull()
+      .references(() => recipes.id, { onDelete: "cascade" }),
+    /** 1-based page number within the source document. */
+    pageNo: integer("page_no").notNull(),
+    /** Relative path under DATA_DIR/images/ of the page capture. */
+    imageFilename: text("image_filename"),
+    /** Raw OCR text for this page. */
+    rawOcrText: text("raw_ocr_text"),
+  },
+  (table) => [
+    index("recipe_pages_recipe_idx").on(table.recipeId),
+    uniqueIndex("recipe_pages_recipe_page_uq").on(table.recipeId, table.pageNo),
+  ],
+);
+
+/**
+ * OCR training capture (ADR-0004): append-only, one row per ACCEPTED page,
+ * pairing the raw OCR text with the corrected text a person accepted at
+ * review. Written only at acceptance (that capture lands in a later phase);
+ * `corrected_text` and `accepted_at` stay NULL until then. `source` records
+ * where the sample came from ('scan' for camera and PDF alike) so future
+ * backfills can be excluded from training exports.
+ */
+export const ocrTrainingSamples = sqliteTable(
+  "ocr_training_samples",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    recipeId: integer("recipe_id")
+      .notNull()
+      .references(() => recipes.id, { onDelete: "cascade" }),
+    /** 1-based page number within the source document. */
+    pageNo: integer("page_no").notNull(),
+    /** Relative path under DATA_DIR/images/ of the page capture. */
+    imageFilename: text("image_filename"),
+    /** Raw OCR text as recognized — never overwritten by review edits. */
+    rawOcrText: text("raw_ocr_text").notNull(),
+    /** The text a person accepted at review. NULL until acceptance. */
+    correctedText: text("corrected_text"),
+    /** Where the sample came from ('scan' for camera and PDF alike). */
+    source: text("source").notNull().default("scan"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+    /** When the corrected text was accepted. NULL until capture. */
+    acceptedAt: integer("accepted_at", { mode: "timestamp_ms" }),
+  },
+  (table) => [index("ocr_training_samples_recipe_idx").on(table.recipeId)],
+);
+
 /** Useful composite types for code that reads from these tables. */
 export type Recipe = typeof recipes.$inferSelect;
 export type NewRecipe = typeof recipes.$inferInsert;
@@ -171,6 +235,10 @@ export type Step = typeof steps.$inferSelect;
 export type NewStep = typeof steps.$inferInsert;
 export type Tag = typeof tags.$inferSelect;
 export type NewTag = typeof tags.$inferInsert;
+export type RecipePage = typeof recipePages.$inferSelect;
+export type NewRecipePage = typeof recipePages.$inferInsert;
+export type OcrTrainingSample = typeof ocrTrainingSamples.$inferSelect;
+export type NewOcrTrainingSample = typeof ocrTrainingSamples.$inferInsert;
 
 // Re-export `primaryKey` so consumer code that composes composite keys doesn't
 // have to import from drizzle-orm directly. (No current consumer, but keeps the
