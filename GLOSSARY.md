@@ -18,6 +18,10 @@ _Avoid_: Pending, staging
 Turning an outside input (URL, scan text, manual entry) into a Draft, stamping source type and initial confidences. URL fetch, scan recognition, and manual blank are adapters behind its seam, not separate flows.
 _Avoid_: Ingest
 
+**Add flow**:
+The intake path from choosing an entry method through import or recognition and review to saving a Draft.
+_Avoid_: Intake workflow
+
 **Review**:
 The pass over a draft where a person confirms or corrects it before it is a kept recipe. Auto-normalization at review is trim-only: whitespace, never content.
 _Avoid_: Approval, QA

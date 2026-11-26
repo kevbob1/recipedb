@@ -30,24 +30,26 @@ import {
   setQty,
 } from "../lib/draft";
 import { recognizeText } from "../lib/ocr";
-import { createDraft, requestUrlImport } from "../lib/import";
+import { requestUrlImport } from "../lib/import";
 import { useSaveDraft } from "../lib/use-save-draft";
-import { MAX_SCAN_UPLOAD_BYTES, MAX_SCAN_UPLOAD_MB } from "../lib/scan/limits";
+import { MAX_SCAN_UPLOAD_MB } from "../lib/scan/limits";
 import {
   MAX_BULK_FILES,
   bulkProgress,
   formatBulkHeadline,
   formatFileSize,
-  planBulkBatch,
-  runBulkImport,
-  summarizeBulkBatch,
-  toBulkInputs,
   appBulkSeams,
   type BulkFileState,
   type BulkFileStatus,
   type BulkSummary,
   type RejectedFile,
 } from "../lib/bulk-import";
+import {
+  createAddFlowActions,
+  initialAddFlowState,
+  type AddFlowState,
+  type Entry,
+} from "../lib/add-flow";
 import { ReviewEditor, inputStyle, primaryBtn, ghostBtn } from "./review-editor";
 import { requireAuth } from "../lib/auth.server";
 
@@ -63,8 +65,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   return null;
 }
 
-type Step = 1 | 2 | 3 | 4;
-type Entry = "url" | "photo" | "bulk" | "type" | null;
+type Step = AddFlowState["step"];
 
 export default function AddRoute(_args: Route.ComponentProps) {
   return (
@@ -74,27 +75,14 @@ export default function AddRoute(_args: Route.ComponentProps) {
   );
 }
 
-function StepperShell() {
-  const [step, setStep] = useState<Step>(1);
-  const [entry, setEntry] = useState<Entry>(null);
-  const [draft, setDraft] = useState<RecipeDraft>(() =>
-    createDraft({ kind: "manual" }),
+export function StepperShell({
+  initialState,
+}: {
+  initialState?: AddFlowState;
+} = {}) {
+  const [flow, setFlow] = useState<AddFlowState>(
+    () => initialState ?? initialAddFlowState(),
   );
-  const [urlInput, setUrlInput] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [photoState, setPhotoState] = useState<"idle" | "capturing" | "ocr" | "done" | "error">("idle");
-  // The original capture is retained for this import and uploaded with the
-  // draft, so the server can keep it for re-OCR (#28). No downscale.
-  const [photoFile, setPhotoFile] = useState<File | null>(null);
-  const [savedRecipeId, setSavedRecipeId] = useState<number | null>(null);
-  const [submitInFlight, setSubmitInFlight] = useState(false);
-  // Bulk import (many photos -> many auto-saved recipes). The queue, the
-  // up-front rejections and the closing report are all bulk-import.ts state;
-  // this route only drives the run and renders it.
-  const [bulkStates, setBulkStates] = useState<BulkFileState[]>([]);
-  const [bulkRejected, setBulkRejected] = useState<RejectedFile[]>([]);
-  const [bulkSummary, setBulkSummary] = useState<BulkSummary | null>(null);
-  const [bulkRunning, setBulkRunning] = useState(false);
   // The save seam owns JSON-vs-multipart and the busy/error state for it.
   const {
     save: saveToServer,
@@ -105,140 +93,15 @@ function StepperShell() {
 
   const stepLabels = ["1 · Add", "2 · Get it", "3 · Review", "4 · Saved"];
 
-  const need = useMemo(() => countNeedEyes(draft), [draft]);
-
-  function pickEntry(e: Entry) {
-    setEntry(e);
-    setError(null);
-    clearSaveError();
-    // Clear the previous run. Provenance is stamped by the adapter that
-    // actually produces the next draft (manual here; url/scan once their
-    // import succeeds), never by the route.
-    setDraft(createDraft({ kind: "manual" }));
-    resetBulk();
-    setStep(e === "type" ? 3 : 2);
-  }
-
-  function resetBulk() {
-    setBulkStates([]);
-    setBulkRejected([]);
-    setBulkSummary(null);
-  }
-
-  async function runUrlImport() {
-    setError(null);
-    if (!urlInput.trim()) {
-      setError("Paste a URL first.");
-      return;
-    }
-    setSubmitInFlight(true);
-    try {
-      const { draft: imported } = await requestUrlImport(urlInput);
-      setDraft(imported);
-      setStep(3);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Couldn't import that URL.",
-      );
-    } finally {
-      setSubmitInFlight(false);
-    }
-  }
-
-  async function captureAndOcr(file: File) {
-    setError(null);
-    if (file.size > MAX_SCAN_UPLOAD_BYTES) {
-      setError(
-        `That image is larger than ${MAX_SCAN_UPLOAD_MB}MB. Retake it or pick a smaller file.`,
-      );
-      return;
-    }
-    setPhotoState("capturing");
-    setPhotoFile(file);
-    try {
-      // OCR reads the same original bytes in this tab; the file is also kept
-      // and uploaded with the draft so the server can retain it (#28).
-      setPhotoState("ocr");
-      const text = await recognizeText(file);
-      // The camera capture is page 1 of a one-page scan (ADR-0004): the same
-      // per-page review/training model a scanned PDF gets.
-      setDraft(
-        createDraft({
-          kind: "scan",
-          text,
-          pages: [{ pageNo: 1, imageFilename: "", text }],
-        }),
-      );
-      setPhotoState("done");
-      setStep(3);
-    } catch (err) {
-      setPhotoState("error");
-      setError((err as Error).message ?? "OCR failed.");
-    }
-  }
-
-  async function save() {
-    setError(null);
-    try {
-      // The hook decides JSON vs multipart (a retained scan rides along as the
-      // untouched bytes) and surfaces a failed save through its own error.
-      setSavedRecipeId(await saveToServer(draft, photoFile));
-      setStep(4);
-    } catch {
-      // Message already lives in the hook's error state.
-    }
-  }
-
-  /**
-   * Bulk path: N images -> N recipes, no review step. Validation happens up
-   * front (planBulkBatch), then runBulkImport walks the queue one image at a
-   * time: OCR -> createDraft({kind:'scan'}) -> the same save seam the single
-   * photo flow uses. One failure never stops the batch.
-   */
-  async function runBulk(files: File[]) {
-    if (bulkRunning) return;
-    setError(null);
-    clearSaveError();
-    setBulkSummary(null);
-
-    const plan = planBulkBatch(await toBulkInputs(files));
-    setBulkStates(plan.states);
-    setBulkRejected(plan.rejected);
-
-    if (plan.accepted.length === 0) {
-      // Nothing passed validation — report that straight away.
-      setBulkSummary(summarizeBulkBatch(plan.states, plan.rejected));
-      return;
-    }
-
-    setBulkRunning(true);
-    try {
-      const { summary } = await runBulkImport({
-        plan,
-        ...appBulkSeams(recognizeText, saveToServer),
-        onChange: setBulkStates,
-      });
-      setBulkSummary(summary);
-    } finally {
-      // A failed per-file save sets the hook's error; the batch reports it per
-      // row instead, so don't leave a stale banner behind for the next step.
-      clearSaveError();
-      setBulkRunning(false);
-    }
-  }
-
-  function restart() {
-    setStep(1);
-    setEntry(null);
-    setDraft(createDraft({ kind: "manual" }));
-    setUrlInput("");
-    setError(null);
-    clearSaveError();
-    setPhotoState("idle");
-    setPhotoFile(null);
-    setSavedRecipeId(null);
-    resetBulk();
-  }
+  const need = useMemo(() => countNeedEyes(flow.draft), [flow.draft]);
+  const photoFile = flow.photo.file;
+  const actions = createAddFlowActions(flow, setFlow, {
+    fetchUrlImport: requestUrlImport,
+    recognize: recognizeText,
+    persist: (draft, photoFile) => saveToServer(draft, photoFile),
+    bulkSeams: appBulkSeams(recognizeText, saveToServer),
+    clearSaveError,
+  });
 
   return (
     <>
@@ -248,49 +111,49 @@ function StepperShell() {
           <strong>Draft</strong> · {need.total} fields · {need.need} need eyes
         </span>
       </header>
-      <StepperProgress step={step} labels={stepLabels} />
+      <StepperProgress step={flow.step} labels={stepLabels} />
 
-      {step === 1 ? <Step1Pick onPick={pickEntry} /> : null}
-      {step === 2 && entry === "bulk" ? (
+      {flow.step === 1 ? <Step1Pick onPick={actions.pickEntry} /> : null}
+      {flow.step === 2 && flow.entry === "bulk" ? (
         <Step2Bulk
-          states={bulkStates}
-          rejected={bulkRejected}
-          summary={bulkSummary}
-          running={bulkRunning}
-          onRun={runBulk}
-          onReset={resetBulk}
-          onBack={() => setStep(1)}
+          states={flow.bulk.states}
+          rejected={flow.bulk.rejected}
+          summary={flow.bulk.summary}
+          running={flow.bulk.running}
+          onRun={actions.runBulk}
+          onReset={actions.resetBulk}
+          onBack={actions.goBack}
         />
       ) : null}
-      {step === 2 && entry !== "bulk" ? (
+      {flow.step === 2 && flow.entry !== "bulk" ? (
         <Step2Get
-          entry={entry}
-          url={urlInput}
-          setUrl={setUrlInput}
-          onUrlImport={runUrlImport}
-          onCapture={captureAndOcr}
-          photoState={photoState}
-          submitting={submitInFlight}
-          onBack={() => setStep(1)}
-          error={error}
+          entry={flow.entry}
+          url={flow.urlInput}
+          setUrl={actions.setUrlInput}
+          onUrlImport={actions.runUrlImport}
+          onCapture={actions.captureAndOcr}
+          photoState={flow.photo.status}
+          submitting={flow.submitInFlight}
+          onBack={actions.goBack}
+          error={flow.error}
         />
       ) : null}
-      {step === 3 ? (
+      {flow.step === 3 ? (
         <Step3Review
-          draft={draft}
-          setDraft={setDraft}
-          error={error ?? saveError}
-          onBack={() => setStep(2)}
-          onSave={save}
+          draft={flow.draft}
+          setDraft={actions.editDraft}
+          error={flow.error ?? saveError}
+          onBack={actions.goBack}
+          onSave={actions.save}
           saving={saving}
           onReOcr={photoFile ? () => recognizeText(photoFile) : undefined}
         />
       ) : null}
-      {step === 4 ? (
+      {flow.step === 4 ? (
         <Step4Saved
-          recipeId={savedRecipeId}
+          recipeId={flow.savedRecipeId}
           count={need.total}
-          onAddAnother={restart}
+          onAddAnother={actions.restart}
         />
       ) : null}
     </>
