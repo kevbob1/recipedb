@@ -2,7 +2,6 @@ import fs from "node:fs";
 import { asc, eq } from "drizzle-orm";
 import { getDb } from "../db/client.server";
 import {
-  ocrTrainingSamples,
   recipePages,
   recipes,
 } from "../db/schema.server";
@@ -11,6 +10,11 @@ import { executeSave } from "./draft-store.server";
 import { joinPageText } from "./review-pages";
 import { ingest } from "./scan/recognize-node.server";
 import { resolveStoredImagePath } from "./scan/storage.server";
+import {
+  isRecipeReviewed,
+  reviewedRecipeIds,
+  verifyBackfilledSamples,
+} from "./scan/training-samples.server";
 
 export type BackfillStatus =
   | "backfilled"
@@ -47,15 +51,6 @@ type PageSource = {
   imageFilename: string | null;
 };
 
-function isReviewed(recipeId: number): boolean {
-  return getDb()
-    .select({ acceptedAt: ocrTrainingSamples.acceptedAt })
-    .from(ocrTrainingSamples)
-    .where(eq(ocrTrainingSamples.recipeId, recipeId))
-    .all()
-    .some((sample) => sample.acceptedAt !== null);
-}
-
 export function listBackfillTargets(): {
   targets: { id: number; title: string }[];
   skipped: { id: number; title: string; reason: "reviewed" }[];
@@ -67,16 +62,7 @@ export function listBackfillTargets(): {
     .where(eq(recipes.sourceType, "scan"))
     .orderBy(asc(recipes.id))
     .all();
-  const markers = db
-    .select({
-      recipeId: ocrTrainingSamples.recipeId,
-      acceptedAt: ocrTrainingSamples.acceptedAt,
-    })
-    .from(ocrTrainingSamples)
-    .all();
-  const reviewed = new Set(
-    markers.filter((row) => row.acceptedAt !== null).map((row) => row.recipeId),
-  );
+  const reviewed = reviewedRecipeIds(db);
   return {
     targets: rows
       .filter((row) => !reviewed.has(row.id))
@@ -126,7 +112,7 @@ export async function backfillRecipe(
   if (recipe.sourceType !== "scan") {
     return { recipeId, status: "skipped-not-scan" };
   }
-  if (!options.force && isReviewed(recipeId)) {
+  if (!options.force && isRecipeReviewed(db, recipeId)) {
     return { recipeId, status: "skipped-reviewed" };
   }
 
@@ -168,14 +154,7 @@ export async function backfillRecipe(
       capture: "backfill",
       acceptedAt: deps.clock(),
     });
-    const samples = db
-      .select({ acceptedAt: ocrTrainingSamples.acceptedAt })
-      .from(ocrTrainingSamples)
-      .where(eq(ocrTrainingSamples.recipeId, recipeId))
-      .all();
-    if (samples.length !== pages.length || samples.some((row) => row.acceptedAt === null)) {
-      throw new Error("training-sample-verification-failed");
-    }
+    verifyBackfilledSamples(db, recipeId, pages.length);
     return {
       recipeId,
       status: "backfilled",

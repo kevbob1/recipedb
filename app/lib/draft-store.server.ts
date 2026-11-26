@@ -47,7 +47,6 @@ import { eq } from "drizzle-orm";
 import { getDb, getImagesDir, getRawSqlite } from "../db/client.server";
 import {
   ingredientLines,
-  ocrTrainingSamples,
   recipePages,
   recipes,
   steps,
@@ -78,6 +77,7 @@ import {
   validatePdfUpload,
   validateScanUpload,
 } from "./scan/index.server";
+import { captureTrainingSamples } from "./scan/training-samples.server";
 
 // The pure half of the seam lives in ./save-command (payload decode + field
 // validation + the command union); re-exported here so existing callers keep
@@ -184,67 +184,6 @@ function insertChildren(recipeId: number, prepared: PersistedDraft): void {
       .values(prepared.pages.map((row) => ({ ...row, recipeId })))
       .run();
   }
-}
-
-/**
- * OCR training capture (ADR-0004): one sample per persisted page.
- *
- * The raw side is write-once — the text as first persisted for that page,
- * which is the engine's output for an auto-saved import — and survives
- * revisions; the corrected side is the page text at THIS save. `accepted`
- * marks a review acceptance (a revise: the review screen is the only caller),
- * which is when a human has had the text in front of them.
- *
- * Runs inside the caller's transaction. Rows are deleted-then-rewritten per
- * recipe, so pages removed in a revise leave no strays, and deleting the
- * recipe cascades (the samples are provenance, never standalone). Nothing
- * trains off these rows here — export is offline, training never runs in the
- * container.
- */
-function captureTrainingSamples(
-  recipeId: number,
-  pages: Omit<NewRecipePage, "recipeId">[],
-  capture:
-    | { mode: "initial" }
-    | { mode: "accept" }
-    | { mode: "backfill"; acceptedAt?: Date },
-): void {
-  const db = getDb();
-  const existing =
-    capture.mode !== "backfill"
-      ? db
-          .select({
-            pageNo: ocrTrainingSamples.pageNo,
-            rawOcrText: ocrTrainingSamples.rawOcrText,
-          })
-          .from(ocrTrainingSamples)
-          .where(eq(ocrTrainingSamples.recipeId, recipeId))
-          .all()
-      : [];
-  const rawByPageNo = new Map(
-    existing.map((row) => [row.pageNo, row.rawOcrText]),
-  );
-  db.delete(ocrTrainingSamples)
-    .where(eq(ocrTrainingSamples.recipeId, recipeId))
-    .run();
-  if (pages.length === 0) return;
-  db.insert(ocrTrainingSamples)
-    .values(
-      pages.map((page) => ({
-        recipeId,
-        pageNo: page.pageNo,
-        imageFilename: page.imageFilename,
-        rawOcrText: rawByPageNo.get(page.pageNo) ?? page.rawOcrText ?? "",
-        correctedText: page.rawOcrText ?? "",
-        acceptedAt:
-          capture.mode === "initial"
-            ? null
-            : capture.mode === "accept"
-              ? new Date()
-              : (capture.acceptedAt ?? new Date()),
-      })),
-    )
-    .run();
 }
 
 /** Delete the child rows for a recipe. Caller supplies the transaction. */
@@ -380,7 +319,7 @@ function insertNewRecipe(
         originalFilename,
     }));
     insertChildren(recipeId, pages ? { ...prepared, pages } : prepared);
-    captureTrainingSamples(recipeId, pages ?? [], { mode: "initial" });
+    captureTrainingSamples(getDb(), recipeId, pages ?? [], { mode: "initial" });
 
     // The recipe cover points at page 1 when there are page rasters, else at
     // the original capture.
@@ -448,15 +387,12 @@ function reviseDraft(
       .set({ ...prepared.fields, updatedAt: now })
       .where(eq(recipes.id, id))
       .run();
-    if (captureMode === "backfill") {
-      db.delete(ocrTrainingSamples)
-        .where(eq(ocrTrainingSamples.recipeId, id))
-        .run();
-    }
     // Replace, do not merge: the review screen's state is the whole truth.
     deleteChildren(id);
     insertChildren(id, prepared);
-    captureTrainingSamples(id, prepared.pages ?? [], {
+    // Backfill's destructive raw replacement is owned by scan/training-samples;
+    // its mode intentionally skips the ordinary write-once raw lookup.
+    captureTrainingSamples(db, id, prepared.pages ?? [], {
       mode: captureMode,
       acceptedAt,
     });

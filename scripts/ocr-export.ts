@@ -11,12 +11,14 @@ import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { getDataDir, getRawSqlite } from "../app/db/client.server";
+import { isAccepted } from "../app/lib/scan/training-samples.server";
 
 interface TrainingSample {
   recipe_id: number;
   page_no: number;
   image_filename: string | null;
   corrected_text: string;
+  accepted_at: number | null;
 }
 
 interface UnreviewedCount {
@@ -67,23 +69,23 @@ export function exportOcrTraining(
 ): OcrExportCounts {
   assertTrainingTable(sqlite);
 
-  const samples = sqlite
+  const allSamples = sqlite
     .prepare(
-      `SELECT recipe_id, page_no, image_filename, corrected_text
+      `SELECT recipe_id, page_no, image_filename, corrected_text, accepted_at
          FROM ocr_training_samples
-        WHERE accepted_at IS NOT NULL
         ORDER BY recipe_id, page_no`,
     )
     .all() as TrainingSample[];
-  const unreviewed = sqlite
-    .prepare(
-      `SELECT recipe_id, count(*) AS count
-         FROM ocr_training_samples
-        WHERE accepted_at IS NULL
-        GROUP BY recipe_id
-        ORDER BY recipe_id`,
-    )
-    .all() as UnreviewedCount[];
+  const samples = allSamples.filter((sample) =>
+    isAccepted({ acceptedAt: sample.accepted_at }),
+  );
+  const unreviewed: UnreviewedCount[] = [];
+  for (const sample of allSamples) {
+    if (isAccepted({ acceptedAt: sample.accepted_at })) continue;
+    const previous = unreviewed.at(-1);
+    if (previous?.recipe_id === sample.recipe_id) previous.count += 1;
+    else unreviewed.push({ recipe_id: sample.recipe_id, count: 1 });
+  }
 
   const imageDir = path.join(outDir, "images");
   const groundTruthDir = path.join(outDir, "ground-truth");
