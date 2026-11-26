@@ -1,3 +1,5 @@
+import { isStagedPath, isStoredPath } from "./scan/image-path";
+
 /**
  * Save command — the store's single input shape, and the only place a save is
  * validated.
@@ -9,9 +11,11 @@
  * fields happen in `validateSaveCommand` here, so the decisions can be tested
  * without a server, a request, or a database (candidate #1).
  *
- * Layering rule: this module must never import the store, the db client, or
- * the scan module. `SaveError` lives here because both the validator and the
- * store throw it; draft-store.server.ts re-exports it for existing callers.
+ * Layering rule: this module must never import the store, the db client, or a
+ * runtime server-only (`.server` or effectful) module. Pure policy modules such
+ * as `scan/image-path.ts` are allowed. `SaveError` lives here because both the
+ * validator and the store throw it; draft-store.server.ts re-exports it for
+ * existing callers.
  */
 import type {
   NewIngredientLine,
@@ -352,7 +356,7 @@ export function validateSaveCommand(command: SaveCommand): ValidatedSaveCommand 
       const imageFilename = prepared.fields.imageFilename;
       if (
         imageFilename &&
-        !/^(?:\d+\/.+|_staging\/[^/]+\.webp)$/.test(imageFilename)
+        !(isStoredPath(imageFilename) || isStagedPath(imageFilename))
       ) {
         throw new SaveError(
           "bad-draft",

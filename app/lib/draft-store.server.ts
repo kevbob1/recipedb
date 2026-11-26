@@ -1,3 +1,5 @@
+import { isStagedPath, retainedName } from "./scan/image-path";
+
 /**
  * Draft persistence seam — the one place that converts between the review
  * screen's editable RecipeDraft and the relational rows.
@@ -324,17 +326,16 @@ function insertNewRecipe(
     // URL-import images are staged before the recipe id exists. Move them into
     // the recipe directory now so every retained image is recipe-scoped.
     const stagedImage = prepared.fields.imageFilename;
-    const importedImageFilename = stagedImage?.startsWith("_staging/")
-      ? `${recipeId}/original.webp`
-      : null;
-    if (stagedImage?.startsWith("_staging/")) {
+    let importedImageFilename: string | null = null;
+    if (stagedImage && isStagedPath(stagedImage)) {
+      importedImageFilename = retainedName(recipeId, "webp");
       const imagesDir = getImagesDir();
       const recipeDir = path.join(imagesDir, String(recipeId));
       try {
         fs.mkdirSync(recipeDir, { recursive: true });
         fs.renameSync(
           path.join(imagesDir, stagedImage),
-          path.join(recipeDir, "original.webp"),
+          path.join(imagesDir, importedImageFilename),
         );
       } catch (err) {
         throw new ScanImageError(

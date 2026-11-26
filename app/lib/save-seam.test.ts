@@ -55,12 +55,12 @@ const STORE_ONLY = [
   /attachImageFilename\(/,
 ];
 
-/** The validator must stay pure: no db, no scan module, no store import. */
+/** The validator must stay pure: no db, server scan module, or store import. */
 const PURE_ONLY = [
   /getDb\(/,
   /getRawSqlite\(/,
   /from "\.\.\/db\/client/,
-  /from "\.\/scan\//,
+  /from "\.\/scan\/(?!image-path")/,
   /from "\.\/draft-store\.server"/,
   /request\.(json|formData)\(/,
   /saveOriginalScanImage\(/,

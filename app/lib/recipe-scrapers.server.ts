@@ -1,3 +1,5 @@
+import { stagedName } from "./scan/image-path";
+
 /**
  * Server-side URL import — ticket #4.
  *
@@ -16,7 +18,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import {
   type IngredientItem,
@@ -331,14 +332,14 @@ async function downloadRecipeImage(imageUrl: string): Promise<string | null> {
 }
 
 async function writeImage(buf: Buffer): Promise<string> {
-  const dir = path.join(getImagesDir(), "_staging");
+  const staged = stagedName();
+  const out = path.join(getImagesDir(), staged);
+  const dir = path.dirname(out);
   fs.mkdirSync(dir, { recursive: true });
-  const filename = `${randomUUID()}.webp`;
-  const out = path.join(dir, filename);
   await sharp(buf)
     .rotate() // honor EXIF orientation
     .resize({ width: 1600, withoutEnlargement: true })
     .webp({ quality: 82 })
     .toFile(out);
-  return `_staging/${filename}`;
+  return staged;
 }

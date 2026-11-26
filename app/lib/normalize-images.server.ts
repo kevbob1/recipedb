@@ -1,3 +1,5 @@
+import { retainedName } from "./scan/image-path";
+
 import fs from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
@@ -50,9 +52,9 @@ export function normalizeImages(
   for (const row of flatRows) {
     const from = row.imageFilename;
     const extension = path.extname(from);
-    const to = `${row.id}/original${extension}`;
+    const to = retainedName(row.id, extension.replace(/^\./, ""));
     const sourcePath = resolveStoredImagePath(from);
-    const destinationPath = path.join(imagesDir, String(row.id), `original${extension}`);
+    const destinationPath = path.join(imagesDir, to);
     if (!sourcePath || !extension || !fs.existsSync(sourcePath)) {
       failed.push({ recipeId: row.id, from, reason: "source-missing" });
       continue;
