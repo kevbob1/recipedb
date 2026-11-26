@@ -13,12 +13,10 @@
  *     capture never leaves a recipe behind.
  */
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ensureDataDirs, getDb, getRawSqlite } from "../db/client.server";
+import { describe, expect, it } from "vitest";
+import { getDb } from "../db/client.server";
 import { recipes } from "../db/schema.server";
-import { runMigrations } from "../db/migrate.server";
 import type { RecipeDraft } from "./draft";
 import {
   executeSave,
@@ -31,6 +29,7 @@ import {
 } from "./save-command";
 import type { SaveCommand } from "./save-command";
 import { ScanImageError } from "./scan/index.server";
+import { withDb } from "./testing/with-db";
 
 const root = process.cwd();
 function source(relativePath: string): string {
@@ -108,23 +107,7 @@ describe("save seam — static guard", () => {
   });
 });
 
-let tmpDir: string;
-let originalDataDir: string | undefined;
-
-beforeAll(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recipedb-seam-"));
-  originalDataDir = process.env.DATA_DIR;
-  process.env.DATA_DIR = tmpDir;
-  ensureDataDirs();
-  runMigrations();
-});
-
-afterAll(() => {
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
-  if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-  getRawSqlite().close();
-});
+withDb();
 
 function draft(title: string): RecipeDraft {
   return {

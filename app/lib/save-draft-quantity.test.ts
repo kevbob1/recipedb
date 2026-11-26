@@ -9,38 +9,14 @@
  * nowhere to live. That is the "qty truth by construction" rule from the
  * decision on #15.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { ensureDataDirs, getRawSqlite } from "../db/client.server";
-import { runMigrations } from "../db/migrate.server";
+import { describe, expect, it } from "vitest";
+import { getRawSqlite } from "../db/client.server";
 import type { RecipeDraft } from "./draft";
 import { fromText, setQty } from "./ingredient-line";
 import { executeSave, loadDraft } from "./draft-store.server";
+import { withDb } from "./testing/with-db";
 
-let tmpDir: string;
-let originalDataDir: string | undefined;
-
-beforeAll(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recipedb-qty-"));
-  originalDataDir = process.env.DATA_DIR;
-  process.env.DATA_DIR = tmpDir;
-  delete process.env.RECIPEDB_DB_PATH;
-  ensureDataDirs();
-  runMigrations();
-});
-
-afterAll(() => {
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
-  if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-  try {
-    getRawSqlite().close();
-  } catch {
-    // already closed
-  }
-});
+withDb();
 
 function draftWith(qty: string, unit: string | null): RecipeDraft {
   return {

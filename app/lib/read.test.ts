@@ -14,38 +14,22 @@
  * is reachable from a loader test: the route table registers `recipes/:id`,
  * and the home list links to the read view rather than straight to review.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
-import { runMigrations } from "../db/migrate.server";
-import { ensureDataDirs, getDb, getRawSqlite } from "../db/client.server";
+import { getDb } from "../db/client.server";
 import { recipes } from "../db/schema.server";
 import { blankDraft, type RecipeDraft } from "./draft";
 import { deleteRecipe, executeSave } from "./draft-store.server";
 import { loadReadRecipe, type ReadLoad } from "./read.server";
+import { withDb } from "./testing/with-db";
 
-let tmpDir: string;
-let originalDataDir: string | undefined;
 let seededId: number;
 
-beforeAll(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recipedb-read-"));
-  originalDataDir = process.env.DATA_DIR;
-  process.env.DATA_DIR = tmpDir;
-  ensureDataDirs();
-  runMigrations();
-
+withDb();
+beforeEach(() => {
   seededId = executeSave({ kind: "new", draft: readDraft() }).recipeId;
-});
-
-afterAll(() => {
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
-  if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-  getRawSqlite().close();
 });
 
 /** A fully-populated recipe — every field the read view renders. */

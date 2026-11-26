@@ -25,10 +25,10 @@ vi.mock("./scan/recognize-node.server", () => ({
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { getImagesDir, getRawSqlite } from "../db/client.server";
 import { runMigrations } from "../db/migrate.server";
-import { ensureDataDirs, getImagesDir, getRawSqlite } from "../db/client.server";
+import { withDb } from "./testing/with-db";
 import { blankDraft, type RecipeDraft } from "./draft";
 import { deleteRecipe, executeSave, loadDraft } from "./draft-store.server";
 import {
@@ -58,30 +58,20 @@ import type { Route as ScanImagesRoute } from "../routes/+types/api.scan-images.
 const handleSaveDraftRequest = (request: Request) =>
   saveDraftAction({ request } as unknown as Route.ActionArgs);
 
-let tmpDir: string;
-let originalDataDir: string | undefined;
 let originalSecret: string | undefined;
 let authCookie: string;
-let migrations: { applied: string[]; skipped: string[] };
+
+withDb();
 
 beforeAll(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recipedb-scan-"));
-  originalDataDir = process.env.DATA_DIR;
   originalSecret = process.env.SESSION_SECRET;
-  process.env.DATA_DIR = tmpDir;
   process.env.SESSION_SECRET = "scan-image-test-secret";
-  ensureDataDirs();
-  migrations = runMigrations();
   authCookie = buildSessionCookie().split(";")[0]!;
 });
 
 afterAll(() => {
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
   if (originalSecret === undefined) delete process.env.SESSION_SECRET;
   else process.env.SESSION_SECRET = originalSecret;
-  if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-  getRawSqlite().close();
 });
 
 function pngBytes(extra = 8): Buffer {
@@ -176,8 +166,8 @@ function recipeCount(): number {
 }
 
 describe("0002_scan_image migration", () => {
-  it("is applied by the runner", () => {
-    expect(migrations.applied).toContain("0002_scan_image");
+  it("is registered as applied by the runner", () => {
+    expect(runMigrations().skipped).toContain("0002_scan_image");
   });
 
   it("adds the nullable recipes.image_filename column", () => {

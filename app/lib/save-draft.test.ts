@@ -9,13 +9,9 @@
  *   - saving with no title throws
  *   - saving with an unknown category throws (CHECK constraint)
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { runMigrations } from "../db/migrate.server";
-import { ensureDataDirs, getDb, getRawSqlite } from "../db/client.server";
+import { getDb, getRawSqlite } from "../db/client.server";
 import { recipes, ingredientLines, steps, tags } from "../db/schema.server";
 import {
   CATEGORIES,
@@ -31,24 +27,9 @@ import {
   deleteRecipe,
   SaveError,
 } from "./draft-store.server";
+import { withDb } from "./testing/with-db";
 
-let tmpDir: string;
-let originalDataDir: string | undefined;
-
-beforeAll(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recipedb-save-"));
-  originalDataDir = process.env.DATA_DIR;
-  process.env.DATA_DIR = tmpDir;
-  ensureDataDirs();
-  runMigrations();
-});
-
-afterAll(() => {
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
-  if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-  getRawSqlite().close();
-});
+withDb();
 
 function urlDraft(): RecipeDraft {
   return {

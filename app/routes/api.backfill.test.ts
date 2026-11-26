@@ -1,20 +1,10 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { eq } from "drizzle-orm";
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
-import { runMigrations } from "../db/migrate.server";
-import { getDb, getImagesDir, getRawSqlite } from "../db/client.server";
+import { describe, expect, it, vi } from "vitest";
+import { getDb, getImagesDir } from "../db/client.server";
 import { recipes } from "../db/schema.server";
 import { executeSave } from "../lib/draft-store.server";
 import { createDraft } from "../lib/import";
@@ -28,35 +18,13 @@ import {
   default as NormalizeRoute,
   loader as normalizeLoader,
 } from "./api.backfill-normalize-images";
+import { withDb } from "../lib/testing/with-db";
 
 vi.mock("../lib/auth.server", () => ({
   requireAuth: vi.fn(),
 }));
 
-let dataDir: string;
-let previousDataDir: string | undefined;
-
-beforeAll(() => {
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "recipedb-backfill-routes-"));
-  previousDataDir = process.env.DATA_DIR;
-  process.env.DATA_DIR = dataDir;
-  runMigrations();
-});
-
-afterAll(() => {
-  getRawSqlite().close();
-  if (previousDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = previousDataDir;
-  fs.rmSync(dataDir, { recursive: true, force: true });
-});
-
-beforeEach(() => {
-  getRawSqlite().exec(
-    "DELETE FROM ocr_training_samples; DELETE FROM recipe_pages; DELETE FROM ingredient_lines; DELETE FROM steps; DELETE FROM tags; DELETE FROM recipes;",
-  );
-  fs.rmSync(getImagesDir(), { recursive: true, force: true });
-  fs.mkdirSync(getImagesDir(), { recursive: true });
-});
+withDb();
 
 function makeRecipe(sourceType: "scan" | "manual" = "scan"): number {
   const draft = createDraft({ kind: "scan", text: "Route recipe" });

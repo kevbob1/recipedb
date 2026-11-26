@@ -9,37 +9,20 @@
  *   - a stored recipe loads whole: title, ordered ingredients, ordered steps
  *   - loading twice is identical (the cook screen is read-only)
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { runMigrations } from "../db/migrate.server";
-import { ensureDataDirs, getDb, getRawSqlite } from "../db/client.server";
+import { beforeEach, describe, expect, it } from "vitest";
+import { getDb } from "../db/client.server";
 import { recipes } from "../db/schema.server";
 import { eq } from "drizzle-orm";
 import { blankDraft, type RecipeDraft } from "./draft";
 import { executeSave } from "./draft-store.server";
 import { loadCookRecipe, type CookLoad } from "./cook.server";
+import { withDb } from "./testing/with-db";
 
-let tmpDir: string;
-let originalDataDir: string | undefined;
 let seededId: number;
 
-beforeAll(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recipedb-cook-"));
-  originalDataDir = process.env.DATA_DIR;
-  process.env.DATA_DIR = tmpDir;
-  ensureDataDirs();
-  runMigrations();
-
+withDb();
+beforeEach(() => {
   seededId = executeSave({ kind: "new", draft: cookDraft() }).recipeId;
-});
-
-afterAll(() => {
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
-  if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-  getRawSqlite().close();
 });
 
 /** A two-step, three-ingredient recipe — enough to prove ordering. */

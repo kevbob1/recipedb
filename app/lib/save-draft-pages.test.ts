@@ -12,14 +12,13 @@
  *     the reviewed page set accepted
  *   - createDraft stays the only constructor; pages come from the caller
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { runMigrations } from "../db/migrate.server";
-import { ensureDataDirs, getDb, getRawSqlite } from "../db/client.server";
+import { getDb, getImagesDir } from "../db/client.server";
 import { ocrTrainingSamples, recipePages } from "../db/schema.server";
+import { withDb } from "./testing/with-db";
 import { blankDraft, type DraftPage, type RecipeDraft } from "./draft";
 import { createDraft } from "./import";
 import {
@@ -31,26 +30,9 @@ import {
 } from "./draft-store.server";
 import { validateSaveCommand } from "./save-command";
 import { ScanImageError } from "./scan/index.server";
-import { getImagesDir } from "../db/client.server";
 import { recipes } from "../db/schema.server";
 
-let tmpDir: string;
-let originalDataDir: string | undefined;
-
-beforeAll(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recipedb-pages-"));
-  originalDataDir = process.env.DATA_DIR;
-  process.env.DATA_DIR = tmpDir;
-  ensureDataDirs();
-  runMigrations();
-});
-
-afterAll(() => {
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
-  if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-  getRawSqlite().close();
-});
+withDb();
 
 const twoPages: DraftPage[] = [
   { pageNo: 1, imageFilename: "12/page-1.png", text: "1 cup flour" },

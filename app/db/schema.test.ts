@@ -6,42 +6,18 @@
  * inserts a row through the Drizzle schema and reads the raw value back to
  * confirm there is no silent parsing happening.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { runMigrations } from "./migrate.server";
-import { ensureDataDirs, getDb, getRawSqlite } from "./client.server";
+import { getDb, getRawSqlite } from "./client.server";
 import {
   CATEGORIES,
   ingredientLines,
   recipes,
   type NewRecipe,
 } from "./schema.server";
+import { withDb } from "../lib/testing/with-db";
 
-let tmpDir: string;
-let originalDataDir: string | undefined;
-
-beforeAll(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recipedb-test-"));
-  originalDataDir = process.env.DATA_DIR;
-  process.env.DATA_DIR = tmpDir;
-  ensureDataDirs();
-  runMigrations();
-});
-
-afterAll(() => {
-  if (originalDataDir === undefined) {
-    delete process.env.DATA_DIR;
-  } else {
-    process.env.DATA_DIR = originalDataDir;
-  }
-  if (tmpDir) {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
-  getRawSqlite().close();
-});
+withDb();
 
 describe("ingredient line qty preservation", () => {
   it("CATEGORIES is exactly the MVP fixed list", () => {

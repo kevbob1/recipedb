@@ -13,12 +13,8 @@
  *   - suggestTags is case-insensitive prefix and ranks by usage
  *   - buildFtsQuery sanitizes FTS5 syntax characters
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { runMigrations } from "../db/migrate.server";
-import { ensureDataDirs, getDb, getRawSqlite } from "../db/client.server";
+import { beforeEach, describe, expect, it } from "vitest";
+import { getDb } from "../db/client.server";
 import {
   ingredientLines,
   recipes,
@@ -32,24 +28,12 @@ import {
   listRecipes,
   suggestTags,
 } from "./search.server";
+import { withDb } from "./testing/with-db";
 
-let tmpDir: string;
-let originalDataDir: string | undefined;
+withDb();
 
-beforeAll(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recipedb-search-"));
-  originalDataDir = process.env.DATA_DIR;
-  process.env.DATA_DIR = tmpDir;
-  ensureDataDirs();
-  runMigrations();
+beforeEach(() => {
   seed();
-});
-
-afterAll(() => {
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
-  if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-  getRawSqlite().close();
 });
 
 function seed() {
