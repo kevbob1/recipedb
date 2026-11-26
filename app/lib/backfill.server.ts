@@ -1,13 +1,13 @@
 import fs from "node:fs";
 import { asc, eq } from "drizzle-orm";
-import { getDb, getRawSqlite } from "../db/client.server";
+import { getDb } from "../db/client.server";
 import {
   ocrTrainingSamples,
   recipePages,
   recipes,
 } from "../db/schema.server";
 import { createDraft } from "./import";
-import { updateDraftFromBackfill } from "./draft-store.server";
+import { executeSave } from "./draft-store.server";
 import { joinPageText } from "./review-pages";
 import { ingest } from "./scan/recognize-node.server";
 import { resolveStoredImagePath } from "./scan/storage.server";
@@ -161,22 +161,21 @@ export async function backfillRecipe(
         text,
       })),
     });
-    const acceptedAt = deps.clock();
-    const transaction = getRawSqlite().transaction(() => {
-      db.delete(ocrTrainingSamples)
-        .where(eq(ocrTrainingSamples.recipeId, recipeId))
-        .run();
-      updateDraftFromBackfill(recipeId, draft, acceptedAt);
-      const samples = db
-        .select({ acceptedAt: ocrTrainingSamples.acceptedAt })
-        .from(ocrTrainingSamples)
-        .where(eq(ocrTrainingSamples.recipeId, recipeId))
-        .all();
-      if (samples.length !== pages.length || samples.some((row) => row.acceptedAt === null)) {
-        throw new Error("training-sample-verification-failed");
-      }
+    executeSave({
+      kind: "revise",
+      recipeId,
+      draft,
+      capture: "backfill",
+      acceptedAt: deps.clock(),
     });
-    transaction();
+    const samples = db
+      .select({ acceptedAt: ocrTrainingSamples.acceptedAt })
+      .from(ocrTrainingSamples)
+      .where(eq(ocrTrainingSamples.recipeId, recipeId))
+      .all();
+    if (samples.length !== pages.length || samples.some((row) => row.acceptedAt === null)) {
+      throw new Error("training-sample-verification-failed");
+    }
     return {
       recipeId,
       status: "backfilled",

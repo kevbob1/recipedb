@@ -199,25 +199,30 @@ function insertChildren(recipeId: number, prepared: PersistedDraft): void {
 function captureTrainingSamples(
   recipeId: number,
   pages: Omit<NewRecipePage, "recipeId">[],
-  accepted: boolean,
-  acceptedAt?: Date,
+  capture:
+    | { mode: "initial" }
+    | { mode: "accept" }
+    | { mode: "backfill"; acceptedAt?: Date },
 ): void {
-  if (pages.length === 0) return;
   const db = getDb();
-  const existing = db
-    .select({
-      pageNo: ocrTrainingSamples.pageNo,
-      rawOcrText: ocrTrainingSamples.rawOcrText,
-    })
-    .from(ocrTrainingSamples)
-    .where(eq(ocrTrainingSamples.recipeId, recipeId))
-    .all();
+  const existing =
+    capture.mode !== "backfill"
+      ? db
+          .select({
+            pageNo: ocrTrainingSamples.pageNo,
+            rawOcrText: ocrTrainingSamples.rawOcrText,
+          })
+          .from(ocrTrainingSamples)
+          .where(eq(ocrTrainingSamples.recipeId, recipeId))
+          .all()
+      : [];
   const rawByPageNo = new Map(
     existing.map((row) => [row.pageNo, row.rawOcrText]),
   );
   db.delete(ocrTrainingSamples)
     .where(eq(ocrTrainingSamples.recipeId, recipeId))
     .run();
+  if (pages.length === 0) return;
   db.insert(ocrTrainingSamples)
     .values(
       pages.map((page) => ({
@@ -226,7 +231,12 @@ function captureTrainingSamples(
         imageFilename: page.imageFilename,
         rawOcrText: rawByPageNo.get(page.pageNo) ?? page.rawOcrText ?? "",
         correctedText: page.rawOcrText ?? "",
-        acceptedAt: accepted ? acceptedAt ?? new Date() : null,
+        acceptedAt:
+          capture.mode === "initial"
+            ? null
+            : capture.mode === "accept"
+              ? new Date()
+              : (capture.acceptedAt ?? new Date()),
       })),
     )
     .run();
@@ -263,7 +273,12 @@ export function executeSave(command: SaveCommand): SaveResult {
         validated.pdfBytes,
       );
     case "revise":
-      return reviseDraft(validated.recipeId, validated.prepared);
+      return reviseDraft(
+        validated.recipeId,
+        validated.prepared,
+        validated.capture,
+        validated.acceptedAt,
+      );
     case "delete":
       return removeRecipe(validated.recipeId);
   }
@@ -371,7 +386,7 @@ function insertNewRecipe(
         originalFilename,
     }));
     insertChildren(recipeId, pages ? { ...prepared, pages } : prepared);
-    captureTrainingSamples(recipeId, pages ?? [], false);
+    captureTrainingSamples(recipeId, pages ?? [], { mode: "initial" });
 
     // The recipe cover points at page 1 when there are page rasters, else at
     // the original capture.
@@ -450,23 +465,6 @@ export function updateDraft(id: number, draft: RecipeDraft): SaveDraftResult {
   return savedDraft(executeSave({ kind: "revise", recipeId: id, draft }));
 }
 
-/**
- * Backfill-only revise path. The caller owns the surrounding transaction and
- * deletes old training samples first so the fresh OCR becomes the immutable
- * raw text. Normal review continues to preserve its original raw text.
- */
-export function updateDraftFromBackfill(
-  id: number,
-  draft: RecipeDraft,
-  acceptedAt: Date,
-): SaveDraftResult {
-  const validated = validateSaveCommand({ kind: "revise", recipeId: id, draft });
-  if (validated.kind !== "revise") {
-    throw new SaveError("bad-draft", "Expected a revise command.");
-  }
-  return reviseDraft(id, validated.prepared, acceptedAt);
-}
-
 /** Remove an already-validated recipe id. */
 function removeRecipe(recipeId: number): DeleteDraftResult {
   if (!deleteRecipe(recipeId)) {
@@ -484,9 +482,10 @@ function removeRecipe(recipeId: number): DeleteDraftResult {
 function reviseDraft(
   id: number,
   prepared: PersistedDraft,
+  captureMode: "accept" | "backfill",
   acceptedAt?: Date,
 ): SaveDraftResult {
-  const now = acceptedAt ?? new Date();
+  const now = new Date();
   const db = getDb();
 
   const sqlite = getRawSqlite();
@@ -503,10 +502,18 @@ function reviseDraft(
       .set({ ...prepared.fields, updatedAt: now })
       .where(eq(recipes.id, id))
       .run();
+    if (captureMode === "backfill") {
+      db.delete(ocrTrainingSamples)
+        .where(eq(ocrTrainingSamples.recipeId, id))
+        .run();
+    }
     // Replace, do not merge: the review screen's state is the whole truth.
     deleteChildren(id);
     insertChildren(id, prepared);
-    captureTrainingSamples(id, prepared.pages ?? [], true, acceptedAt);
+    captureTrainingSamples(id, prepared.pages ?? [], {
+      mode: captureMode,
+      acceptedAt,
+    });
   });
   run();
 

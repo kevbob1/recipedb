@@ -10,7 +10,7 @@ import {
   recipePages,
   recipes,
 } from "../db/schema.server";
-import { saveDraft, updateDraft } from "./draft-store.server";
+import { executeSave, saveDraft, updateDraft } from "./draft-store.server";
 import { backfillRecipe, listBackfillTargets } from "./backfill.server";
 import { createDraft } from "./import";
 
@@ -69,6 +69,39 @@ function recognized(textByImage: Record<string, string>, confidence = 0.8) {
 }
 
 describe("backfillRecipe", () => {
+  it("preserves first-persisted raw OCR on an ordinary revise", () => {
+    const recipeId = makeRecipe();
+    getDb()
+      .insert(ocrTrainingSamples)
+      .values({
+        recipeId,
+        pageNo: 1,
+        imageFilename: null,
+        rawOcrText: "first OCR",
+        correctedText: "first correction",
+        acceptedAt: new Date("2026-01-01T00:00:00.000Z"),
+      })
+      .run();
+
+    executeSave({
+      kind: "revise",
+      recipeId,
+      draft: createDraft({
+        kind: "scan",
+        text: "Revised recipe",
+        pages: [{ pageNo: 1, imageFilename: null, text: "new OCR" }],
+      }),
+    });
+
+    const [sample] = getDb()
+      .select()
+      .from(ocrTrainingSamples)
+      .where(eq(ocrTrainingSamples.recipeId, recipeId))
+      .all();
+    expect(sample?.rawOcrText).toBe("first OCR");
+    expect(sample?.correctedText).toBe("new OCR");
+  });
+
   it("rebuilds a single-page camera scan and captures fresh accepted OCR", async () => {
     const recipeId = makeRecipe();
     const filename = storeImage(recipeId, "original.webp", "camera");
@@ -125,6 +158,31 @@ describe("backfillRecipe", () => {
       correctedText: pages[0].rawOcrText,
       acceptedAt,
     });
+  });
+
+  it("reports failed when the post-save sample check detects a missing row", async () => {
+    const recipeId = makeRecipe();
+    const filename = storeImage(recipeId, "original.webp", "camera");
+    setCover(recipeId, filename);
+    const trigger = `ignore_training_${recipeId}`;
+    getRawSqlite().exec(
+      `CREATE TRIGGER ${trigger} BEFORE INSERT ON ocr_training_samples
+       WHEN NEW.recipe_id = ${recipeId}
+       BEGIN SELECT RAISE(IGNORE); END;`,
+    );
+
+    try {
+      const result = await backfillRecipe(recipeId, {
+        recognize: recognized({ camera: "Fresh OCR text" }),
+        clock: () => new Date("2026-01-01T00:00:00.000Z"),
+      });
+      expect(result).toMatchObject({
+        status: "failed",
+        error: "training-sample-verification-failed",
+      });
+    } finally {
+      getRawSqlite().exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+    }
   });
 
   it("re-OCRs multiple pages in page order and aggregates confidence", async () => {

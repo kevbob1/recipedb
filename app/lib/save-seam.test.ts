@@ -31,6 +31,7 @@ import {
   decodeDraftPayload,
   validateSaveCommand,
 } from "./save-command";
+import type { SaveCommand } from "./save-command";
 import { ScanImageError } from "./scan/index.server";
 
 const root = process.cwd();
@@ -270,6 +271,29 @@ describe("save seam — pure validation", () => {
         validateSaveCommand({ kind: "delete", recipeId }),
       ).toThrowError(SaveError);
     }
+  });
+
+  it("rejects an unknown training capture mode", () => {
+    const command: unknown = {
+      kind: "revise",
+      recipeId: 1,
+      draft: draft("Bad capture"),
+      capture: "unexpected",
+    };
+    expect(() =>
+      validateSaveCommand(command as SaveCommand),
+    ).toThrowError(SaveError);
+  });
+
+  it("rejects an acceptance timestamp unless capture is backfill", () => {
+    expect(() =>
+      validateSaveCommand({
+        kind: "revise",
+        recipeId: 1,
+        draft: draft("Bad timestamp"),
+        acceptedAt: new Date(),
+      }),
+    ).toThrowError(SaveError);
   });
 });
 

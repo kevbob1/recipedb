@@ -261,7 +261,18 @@ export type SaveCommand =
       pageFiles?: SavePageFile[];
       pdfBytes?: Buffer | null;
     }
-  | { kind: "revise"; recipeId: number; draft: unknown }
+  | {
+      kind: "revise";
+      recipeId: number;
+      draft: unknown;
+      /**
+       * "accept" records a review acceptance and preserves first-persisted
+       * raw OCR. "backfill" replaces existing samples so new OCR is raw text.
+       */
+      capture?: "accept" | "backfill";
+      /** Backfill acceptance timestamp; only valid with capture: "backfill". */
+      acceptedAt?: Date;
+    }
   | { kind: "delete"; recipeId: number };
 
 /** One uploaded page raster: the page it belongs to, and its untouched bytes. */
@@ -285,7 +296,13 @@ export type ValidatedSaveCommand =
       pageFiles: SavePageFile[];
       pdfBytes: Buffer | null;
     }
-  | { kind: "revise"; recipeId: number; prepared: PersistedDraft }
+  | {
+      kind: "revise";
+      recipeId: number;
+      prepared: PersistedDraft;
+      capture: "accept" | "backfill";
+      acceptedAt?: Date;
+    }
   | { kind: "delete"; recipeId: number };
 
 function requireRecipeId(value: number): number {
@@ -371,12 +388,25 @@ export function validateSaveCommand(command: SaveCommand): ValidatedSaveCommand 
         pdfBytes: command.pdfBytes ?? null,
       };
     }
-    case "revise":
+    case "revise": {
+      const capture = command.capture ?? "accept";
+      if (capture !== "accept" && capture !== "backfill") {
+        throw new SaveError("bad-draft", `Unknown training capture mode "${String(capture)}".`);
+      }
+      if (command.acceptedAt !== undefined && capture !== "backfill") {
+        throw new SaveError(
+          "bad-draft",
+          'An acceptance timestamp is only valid with capture: "backfill".',
+        );
+      }
       return {
         kind: "revise",
         recipeId: requireRecipeId(command.recipeId),
         prepared: validateDraft(command.draft),
+        capture,
+        acceptedAt: command.acceptedAt,
       };
+    }
     case "delete":
       return { kind: "delete", recipeId: requireRecipeId(command.recipeId) };
     default: {

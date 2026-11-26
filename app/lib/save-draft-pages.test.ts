@@ -594,7 +594,7 @@ describe("ocr_training_samples capture", () => {
     expect(rows[0].acceptedAt).toBeInstanceOf(Date);
   });
 
-  it("does nothing when saving or revising without pages", () => {
+  it("captures no samples when saving or revising without pages", () => {
     const { recipeId: emptyRecipeId } = saveDraft(scanDraftWithPages([]));
     expect(
       getDb()
@@ -605,18 +605,13 @@ describe("ocr_training_samples capture", () => {
     ).toEqual([]);
 
     const { recipeId } = saveDraft(scanDraftWithPages(twoPages));
-    const before = getDb()
-      .select()
-      .from(ocrTrainingSamples)
-      .where(eq(ocrTrainingSamples.recipeId, recipeId))
-      .all();
     updateDraft(recipeId, scanDraftWithPages([]));
     const after = getDb()
       .select()
       .from(ocrTrainingSamples)
       .where(eq(ocrTrainingSamples.recipeId, recipeId))
       .all();
-    expect(after).toEqual(before);
+    expect(after).toEqual([]);
   });
 
   it("removes training rows when the recipe is deleted", () => {
