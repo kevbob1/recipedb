@@ -19,6 +19,10 @@
  * Everything line-related (fromText/setQty/scale/display/formatAmount + the
  * qty types) is re-exported from ./ingredient-line.ts below, so callers — the
  * browser review editor included — import Draft things from here only.
+ *
+ * This module also owns field derivation for both Draft reconstruction
+ * adapters: persisted rows and OCR extraction. It derives fields but does not
+ * construct/stamp fresh RecipeDrafts; createDraft remains the only constructor.
  */
 
 import { CATEGORIES, type Category } from "./categories";
@@ -212,6 +216,56 @@ export function ingredientConfidence(ing: DraftIngredient): Confidence {
   if (!ing.text.trim()) return "bad";
   if (!ing.qty.trim()) return "warn";
   return "ok";
+}
+
+/**
+ * Neutral inputs shared by the database-row and OCR reconstruction adapters.
+ * Confidence overrides preserve source-specific evidence (for example, OCR's
+ * best-effort title badge); omitted values use the common text derivation.
+ */
+export interface DraftFieldDerivationInput {
+  title: string;
+  category: Category;
+  yield: string | null;
+  ingredients: DraftIngredient[];
+  titleConfidence?: Confidence;
+  categoryConfidence?: Confidence;
+  pages?: DraftPage[];
+}
+
+/** Derived editable fields shared by both Draft reconstruction directions. */
+export function deriveDraftFields(
+  input: DraftFieldDerivationInput,
+): Pick<
+  RecipeDraft,
+  | "titleConfidence"
+  | "categoryConfidence"
+  | "yieldConfidence"
+  | "ingredients"
+  | "pages"
+> {
+  const fields = {
+    titleConfidence:
+      input.titleConfidence ?? requiredFieldConfidence(input.title),
+    categoryConfidence:
+      input.categoryConfidence ?? requiredFieldConfidence(input.category),
+    yieldConfidence: optionalFieldConfidence(input.yield),
+    ingredients: input.ingredients.map((ingredient) => ({
+      ...ingredient,
+      confidence: ingredientConfidence(ingredient),
+    })),
+  };
+  if (input.pages && input.pages.length > 0) {
+    return {
+      ...fields,
+      pages: input.pages.map((page) => ({
+        pageNo: page.pageNo,
+        imageFilename: page.imageFilename,
+        text: page.text,
+      })),
+    };
+  }
+  return fields;
 }
 
 /** How many fields are flagged as needing eyes in the draft summary. */

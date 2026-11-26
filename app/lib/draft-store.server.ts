@@ -8,6 +8,8 @@ import { isStagedPath, retainedName } from "./scan/image-path";
  * entry that owns every save decision (new / revise / delete), plus
  * `loadDraft` and `deleteRecipe`. Routes and transports hand over a
  * SaveCommand; they never map fields onto columns themselves.
+ * `composeDraft` is the persisted-row adapter to the shared field derivation
+ * in app/lib/draft.ts; it owns storage-specific row mapping only.
  *
  * `executeSave` is a thin sequencer over app/lib/save-command.ts, which holds
  * the pure half of the seam: payload decoding, field validation, and the
@@ -57,9 +59,7 @@ import {
 import {
   type DraftIngredient,
   type RecipeDraft,
-  ingredientConfidence,
-  optionalFieldConfidence,
-  requiredFieldConfidence,
+  deriveDraftFields,
 } from "./draft";
 import {
   SaveError,
@@ -109,49 +109,54 @@ function draftIngredientFromRow(
     note: row.note ?? null,
     confidence: "ok",
   };
-  return { ...base, confidence: ingredientConfidence(base) };
+  return base;
 }
 
 /**
- * The read half of the seam: turn persisted rows back into an editable draft,
- * deriving every confidence badge from the persisted text with the same
- * helpers the importer uses. This is the only place a loaded badge is decided.
+ * Persisted-row adapter: map stored rows to neutral draft fields, then delegate
+ * confidence and page derivation to app/lib/draft.ts.
  */
 export function composeDraft(
   persisted: PersistedDraft,
   raw?: string,
 ): RecipeDraft {
+  const derived = deriveDraftFields({
+    title: persisted.fields.title,
+    category: persisted.fields.category,
+    yield: persisted.fields.yield,
+    ingredients: [...persisted.ingredients]
+      .sort((a, b) => a.position - b.position)
+      .map(draftIngredientFromRow),
+    pages:
+      persisted.pages && persisted.pages.length > 0
+        ? [...persisted.pages]
+            .sort((a, b) => a.pageNo - b.pageNo)
+            .map((row) => ({
+              pageNo: row.pageNo,
+              imageFilename: row.imageFilename ?? null,
+              text: row.rawOcrText ?? "",
+            }))
+        : undefined,
+  });
   const draft: RecipeDraft = {
     title: persisted.fields.title,
-    titleConfidence: requiredFieldConfidence(persisted.fields.title),
+    titleConfidence: derived.titleConfidence,
     category: persisted.fields.category,
-    categoryConfidence: requiredFieldConfidence(persisted.fields.category),
+    categoryConfidence: derived.categoryConfidence,
     yield: persisted.fields.yield,
-    yieldConfidence: optionalFieldConfidence(persisted.fields.yield),
+    yieldConfidence: derived.yieldConfidence,
     tags: [...persisted.tags],
     sourceType: persisted.fields.sourceType,
     sourceUrl: persisted.fields.sourceUrl,
     rawOcrText: persisted.fields.rawOcrText,
     imageFilename: persisted.fields.imageFilename,
     favorite: persisted.fields.favorite,
-    ingredients: [...persisted.ingredients]
-      .sort((a, b) => a.position - b.position)
-      .map(draftIngredientFromRow),
+    ingredients: derived.ingredients,
     steps: [...persisted.steps]
       .sort((a, b) => a.position - b.position)
       .map((row) => ({ position: row.position, text: row.text })),
   };
-  // Pages round-trip as page-order DraftPage rows; absent when there are
-  // none so single-image drafts look exactly as they did before (ADR-0004).
-  if (persisted.pages && persisted.pages.length > 0) {
-    draft.pages = [...persisted.pages]
-      .sort((a, b) => a.pageNo - b.pageNo)
-      .map((row) => ({
-        pageNo: row.pageNo,
-        imageFilename: row.imageFilename ?? null,
-        text: row.rawOcrText ?? "",
-      }));
-  }
+  if (derived.pages) draft.pages = derived.pages;
   if (raw !== undefined) draft.raw = raw;
   return draft;
 }

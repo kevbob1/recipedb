@@ -11,6 +11,8 @@
  * (URL: scraper + importUrl; scan: ocrTextToDraft + importScan + the Add
  * route; manual: blankDraft + the Add route), and the double stamping was the
  * common cause of import-path bugs.
+ * Scan extraction is an input adapter to the shared field derivation in
+ * app/lib/draft.ts; it does not own a second derivation policy.
  *
  * This half is client-safe on purpose: the Add flow recognizes photos in the
  * browser, so the scan adapter (and the shared category mapping) must ship to
@@ -25,6 +27,7 @@ import {
   type DraftStep,
   type RecipeDraft,
   blankDraft,
+  deriveDraftFields,
   optionalFieldConfidence,
   requiredFieldConfidence,
 } from "./draft";
@@ -150,29 +153,36 @@ function draftFromUrl(input: UrlDraftInput): RecipeDraft {
 /** Scan adapter: raw OCR text in, scan-provenance draft out. */
 function draftFromScan(input: ScanDraftInput): RecipeDraft {
   const parsed = parseOcrText(input.text);
+  const category = guessCategory(parsed.title || input.text);
+  const derived = deriveDraftFields({
+    title: parsed.title,
+    titleConfidence: parsed.titleConfidence,
+    category,
+    categoryConfidence: "ok",
+    yield: null,
+    ingredients: parsed.ingredients,
+    pages:
+      input.pages && input.pages.length > 0
+        ? input.pages.map((page) => ({
+            pageNo: page.pageNo,
+            imageFilename: page.imageFilename || null,
+            text: page.text,
+          }))
+        : undefined,
+  });
   return {
     ...blankDraft(),
     title: parsed.title,
-    titleConfidence: parsed.titleConfidence,
-    category: guessCategory(parsed.title || input.text),
-    categoryConfidence: "ok",
+    titleConfidence: derived.titleConfidence,
+    category,
+    categoryConfidence: derived.categoryConfidence,
     sourceType: "scan",
     sourceUrl: null,
     rawOcrText: input.text,
     imageFilename: input.imageFilename ?? null,
-    ingredients: parsed.ingredients,
+    ingredients: derived.ingredients,
     steps: parsed.steps,
-    // Page rows ride through as given (ADR-0004): identity (pageNo) and text
-    // are the caller's; filenames normalize to null when absent or blank.
-    ...(input.pages && input.pages.length > 0
-      ? {
-          pages: input.pages.map((page) => ({
-            pageNo: page.pageNo,
-            imageFilename: page.imageFilename || null,
-            text: page.text,
-          })),
-        }
-      : {}),
+    ...(derived.pages ? { pages: derived.pages } : {}),
   };
 }
 
@@ -225,7 +235,7 @@ function parseOcrText(rawText: string): ParsedOcrText {
 
     if (mode === "ingredients" || (mode === "unknown" && looksIngredient)) {
       mode = "ingredients";
-      ingredients.push(ingredientFromRawLine(line, "warn"));
+      ingredients.push(ingredientFromRawLine(line));
     } else if (mode === "steps" || (mode === "unknown" && looksStep)) {
       mode = "steps";
       const text = line.replace(/^\d+[\.\)]\s+/, "").replace(/^step\s*\d*:?\s*/i, "");
@@ -248,17 +258,15 @@ function parseOcrText(rawText: string): ParsedOcrText {
   return { title, titleConfidence, ingredients, steps };
 }
 
-function ingredientFromRawLine(
-  text: string,
-  confidence: Confidence,
-): DraftIngredient {
+function ingredientFromRawLine(text: string): DraftIngredient {
   return {
     text,
     qty: "",
     unit: null,
     item: text,
     note: null,
-    confidence,
+    // Neutral until deriveDraftFields applies the shared confidence policy.
+    confidence: "ok",
   };
 }
 
