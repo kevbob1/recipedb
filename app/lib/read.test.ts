@@ -24,7 +24,7 @@ import { runMigrations } from "../db/migrate.server";
 import { ensureDataDirs, getDb, getRawSqlite } from "../db/client.server";
 import { recipes } from "../db/schema.server";
 import { blankDraft, type RecipeDraft } from "./draft";
-import { deleteRecipe, saveDraft } from "./draft-store.server";
+import { deleteRecipe, executeSave } from "./draft-store.server";
 import { loadReadRecipe, type ReadLoad } from "./read.server";
 
 let tmpDir: string;
@@ -38,7 +38,7 @@ beforeAll(() => {
   ensureDataDirs();
   runMigrations();
 
-  seededId = saveDraft(readDraft()).recipeId;
+  seededId = executeSave({ kind: "new", draft: readDraft() }).recipeId;
 });
 
 afterAll(() => {
@@ -110,7 +110,10 @@ describe("loadReadRecipe — unknown id", () => {
   });
 
   it("404s for an id that was deleted after saving", () => {
-    const doomed = saveDraft({ ...readDraft(), title: "Doomed Recipe" }).recipeId;
+    const doomed = executeSave({
+      kind: "new",
+      draft: { ...readDraft(), title: "Doomed Recipe" },
+    }).recipeId;
     expectLoaded(loadReadRecipe(String(doomed)));
     expect(deleteRecipe(doomed)).toBe(true);
     expectFailure(loadReadRecipe(String(doomed)), 404, "Not found");

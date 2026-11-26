@@ -10,7 +10,7 @@ import {
   recipePages,
   recipes,
 } from "../db/schema.server";
-import { executeSave, saveDraft, updateDraft } from "./draft-store.server";
+import { executeSave } from "./draft-store.server";
 import { backfillRecipe, listBackfillTargets } from "./backfill.server";
 import { createDraft } from "./import";
 
@@ -42,7 +42,7 @@ beforeEach(() => {
 function makeRecipe(sourceType: "scan" | "manual" = "scan"): number {
   const draft = createDraft({ kind: "scan", text: "Legacy Recipe\n1 cup flour" });
   draft.sourceType = sourceType;
-  return saveDraft(draft).recipeId;
+  return executeSave({ kind: "new", draft }).recipeId;
 }
 
 function storeImage(recipeId: number, filename: string, content: string): string {
@@ -105,10 +105,11 @@ describe("backfillRecipe", () => {
   it("rebuilds a single-page camera scan and captures fresh accepted OCR", async () => {
     const recipeId = makeRecipe();
     const filename = storeImage(recipeId, "original.webp", "camera");
-    updateDraft(
+    executeSave({
+      kind: "revise",
       recipeId,
-      createDraft({ kind: "scan", text: "Old title\n1 cup old flour" }),
-    );
+      draft: createDraft({ kind: "scan", text: "Old title\n1 cup old flour" }),
+    });
     setCover(recipeId, filename);
     const acceptedAt = new Date("2026-01-01T00:00:00.000Z");
 
@@ -231,14 +232,15 @@ describe("backfillRecipe", () => {
     const reviewedId = makeRecipe();
     const reviewedImage = storeImage(reviewedId, "original.png", "reviewed");
     setCover(reviewedId, reviewedImage);
-    updateDraft(
-      reviewedId,
-      createDraft({
+    executeSave({
+      kind: "revise",
+      recipeId: reviewedId,
+      draft: createDraft({
         kind: "scan",
         text: "Old reviewed",
         pages: [{ pageNo: 1, imageFilename: reviewedImage, text: "Old reviewed" }],
       }),
-    );
+    });
     const emptyId = makeRecipe();
     const emptyImage = storeImage(emptyId, "original.png", "empty");
     setCover(emptyId, emptyImage);
@@ -277,14 +279,15 @@ describe("backfillRecipe", () => {
     const reviewedId = makeRecipe();
     const filename = storeImage(reviewedId, "original.png", "force");
     setCover(reviewedId, filename);
-    updateDraft(
-      reviewedId,
-      createDraft({
+    executeSave({
+      kind: "revise",
+      recipeId: reviewedId,
+      draft: createDraft({
         kind: "scan",
         text: "Old OCR",
         pages: [{ pageNo: 1, imageFilename: filename, text: "Old OCR" }],
       }),
-    );
+    });
     const forced = await backfillRecipe(
       reviewedId,
       {
@@ -344,9 +347,10 @@ describe("backfillRecipe", () => {
 
   it("ordinary revise preserves first-persisted raw OCR by page number", () => {
     const recipeId = makeRecipe();
-    updateDraft(
+    executeSave({
+      kind: "revise",
       recipeId,
-      createDraft({
+      draft: createDraft({
         kind: "scan",
         text: "Original page one\nOriginal page two",
         pages: [
@@ -354,10 +358,11 @@ describe("backfillRecipe", () => {
           { pageNo: 2, imageFilename: "1/page-2.png", text: "Original page two" },
         ],
       }),
-    );
-    updateDraft(
+    });
+    executeSave({
+      kind: "revise",
       recipeId,
-      createDraft({
+      draft: createDraft({
         kind: "scan",
         text: "Corrected page one\nCorrected page two",
         pages: [
@@ -365,7 +370,7 @@ describe("backfillRecipe", () => {
           { pageNo: 2, imageFilename: "1/page-2.png", text: "Corrected page two" },
         ],
       }),
-    );
+    });
     const samples = getDb()
       .select()
       .from(ocrTrainingSamples)

@@ -27,8 +27,7 @@ import {
 import {
   loadDraft,
   prepareDraft,
-  saveDraft,
-  updateDraft,
+  executeSave,
   deleteRecipe,
   SaveError,
 } from "./draft-store.server";
@@ -97,7 +96,7 @@ function scanDraft(): RecipeDraft {
 
 describe("saveDraft", () => {
   it("round-trips a URL-derived draft through the storage layer", () => {
-    const { recipeId } = saveDraft(urlDraft());
+    const { recipeId } = executeSave({ kind: "new", draft: urlDraft() });
     const db = getDb();
     const row = db.select().from(recipes).where(eq(recipes.id, recipeId)).get();
     expect(row).toBeDefined();
@@ -124,7 +123,7 @@ describe("saveDraft", () => {
   });
 
   it("round-trips a scan draft, keeping raw OCR text but no source URL", () => {
-    const { recipeId } = saveDraft(scanDraft());
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraft() });
     const db = getDb();
     const row = db.select().from(recipes).where(eq(recipes.id, recipeId)).get();
     expect(row).toBeDefined();
@@ -134,7 +133,7 @@ describe("saveDraft", () => {
   });
 
   it("loadDraft returns an editable RecipeDraft for the review screen", () => {
-    const { recipeId } = saveDraft(urlDraft());
+    const { recipeId } = executeSave({ kind: "new", draft: urlDraft() });
     const loaded = loadDraft(recipeId);
     expect(loaded).not.toBeNull();
     expect(loaded!.title).toBe("Big Stew");
@@ -144,24 +143,28 @@ describe("saveDraft", () => {
   });
 
   it("rejects an empty title", () => {
-    expect(() => saveDraft({ ...blankDraft() })).toThrowError(SaveError);
+    expect(() =>
+      executeSave({ kind: "new", draft: { ...blankDraft() } }),
+    ).toThrowError(SaveError);
   });
 
   it("rejects a category outside the MVP fixed list", () => {
     expect(() =>
-      saveDraft({
-        ...blankDraft(),
-        title: "X",
-        // @ts-expect-error testing the runtime guard
-        category: "fusion",
+      executeSave({
+        kind: "new",
+        draft: {
+          ...blankDraft(),
+          title: "X",
+          category: "fusion",
+        },
       }),
     ).toThrowError(SaveError);
   });
 });
 
-describe("updateDraft", () => {
+describe("revise command", () => {
   it("revises the stored recipe in place and replaces its child rows", () => {
-    const { recipeId } = saveDraft(urlDraft());
+    const { recipeId } = executeSave({ kind: "new", draft: urlDraft() });
     const db = getDb();
     const sqlite = getRawSqlite();
     const rowCountBefore = db.select().from(recipes).all().length;
@@ -187,7 +190,7 @@ describe("updateDraft", () => {
       steps: [{ position: 1, text: "Simmer everything." }],
     };
 
-    const result = updateDraft(recipeId, edited);
+    const result = executeSave({ kind: "revise", recipeId, draft: edited });
     expect(result.recipeId).toBe(recipeId);
 
     // No duplicate recipe row was created.
@@ -239,9 +242,11 @@ describe("updateDraft", () => {
   it("throws SaveError not-found for a missing recipe and writes nothing", () => {
     const db = getDb();
     const rowCountBefore = db.select().from(recipes).all().length;
-    expect(() => updateDraft(999_999, urlDraft())).toThrowError(SaveError);
+    expect(() =>
+      executeSave({ kind: "revise", recipeId: 999_999, draft: urlDraft() }),
+    ).toThrowError(SaveError);
     try {
-      updateDraft(999_999, urlDraft());
+      executeSave({ kind: "revise", recipeId: 999_999, draft: urlDraft() });
     } catch (err) {
       expect((err as SaveError).code).toBe("not-found");
     }
@@ -251,7 +256,7 @@ describe("updateDraft", () => {
 
 describe("deleteRecipe", () => {
   it("cascades to ingredient lines, steps and tags and clears FTS", () => {
-    const { recipeId } = saveDraft(urlDraft());
+    const { recipeId } = executeSave({ kind: "new", draft: urlDraft() });
     const db = getDb();
     const sqlite = getRawSqlite();
 
@@ -358,12 +363,15 @@ describe("save → load → save round-trip", () => {
    */
   it("is idempotent for arbitrary drafts", () => {
     for (let seed = 1; seed <= 40; seed += 1) {
-      const { recipeId } = saveDraft(arbitraryDraft(seed));
+      const { recipeId } = executeSave({
+        kind: "new",
+        draft: arbitraryDraft(seed),
+      });
 
       const first = loadDraft(recipeId);
       expect(first, `seed ${seed}`).not.toBeNull();
 
-      updateDraft(recipeId, first!);
+      executeSave({ kind: "revise", recipeId, draft: first! });
       const second = loadDraft(recipeId);
 
       expect(second, `seed ${seed}`).toEqual(first);
@@ -405,7 +413,7 @@ describe("save → load → save round-trip", () => {
       raw: '{"@type":"Recipe"}',
     };
 
-    const { recipeId } = saveDraft(misleading);
+    const { recipeId } = executeSave({ kind: "new", draft: misleading });
     const loaded = loadDraft(recipeId)!;
 
     expect(loaded.titleConfidence).toBe(requiredFieldConfidence(loaded.title));

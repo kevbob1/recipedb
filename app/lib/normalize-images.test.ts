@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { runMigrations } from "../db/migrate.server";
 import { getDb, getImagesDir, getRawSqlite } from "../db/client.server";
 import { recipes } from "../db/schema.server";
-import { saveDraft } from "./draft-store.server";
+import { executeSave } from "./draft-store.server";
 import { createDraft } from "./import";
 import { normalizeImages } from "./normalize-images.server";
 
@@ -36,7 +36,10 @@ beforeEach(() => {
 });
 
 function makeRecipe(): number {
-  return saveDraft(createDraft({ kind: "scan", text: "Test recipe" })).recipeId;
+  return executeSave({
+    kind: "new",
+    draft: createDraft({ kind: "scan", text: "Test recipe" }),
+  }).recipeId;
 }
 
 describe("normalizeImages", () => {

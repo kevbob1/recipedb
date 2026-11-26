@@ -16,7 +16,7 @@ import {
 import { runMigrations } from "../db/migrate.server";
 import { getDb, getImagesDir, getRawSqlite } from "../db/client.server";
 import { recipes } from "../db/schema.server";
-import { saveDraft } from "../lib/draft-store.server";
+import { executeSave } from "../lib/draft-store.server";
 import { createDraft } from "../lib/import";
 import {
   action as backfillAction,
@@ -61,7 +61,7 @@ beforeEach(() => {
 function makeRecipe(sourceType: "scan" | "manual" = "scan"): number {
   const draft = createDraft({ kind: "scan", text: "Route recipe" });
   draft.sourceType = sourceType;
-  return saveDraft(draft).recipeId;
+  return executeSave({ kind: "new", draft }).recipeId;
 }
 
 function request(body?: string, method = "POST"): Request {

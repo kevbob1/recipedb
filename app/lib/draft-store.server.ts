@@ -284,17 +284,6 @@ export function executeSave(command: SaveCommand): SaveResult {
   }
 }
 
-/** Narrow a dispatched result to one that left a draft in storage. */
-function savedDraft(result: SaveResult): SaveDraftResult {
-  if ("deleted" in result) {
-    throw new SaveError(
-      "insert-failed",
-      "A save that stores a draft cannot also delete it.",
-    );
-  }
-  return result;
-}
-
 /**
  * Persist an ALREADY-VALIDATED new recipe, optionally attaching the original
  * scan capture.
@@ -411,58 +400,10 @@ function insertNewRecipe(
   return { recipeId, isDraft: true };
 }
 
-/** Back-compat wrapper for the new-draft path. Prefer executeSave. */
-export function saveNewDraft(
-  draft: RecipeDraft,
-  imageBytes?: Buffer | null,
-): SaveDraftResult {
-  return savedDraft(
-    executeSave({ kind: "new", draft, imageBytes: imageBytes ?? null }),
-  );
-}
-
-/** Back-compat alias for the no-image save path. Prefer saveNewDraft. */
-export function saveDraft(draft: RecipeDraft): SaveDraftResult {
-  return saveNewDraft(draft);
-}
-
-/** Options for saving over an existing recipe. */
-export interface SaveExistingDraftOptions {
-  /**
-   * The review screen's delete intent: remove the stored recipe (and its
-   * capture) instead of revising it.
-   */
-  delete?: boolean;
-}
-
 /** Result of an existing-recipe save that removed the row. */
 export interface DeleteDraftResult {
   recipeId: number;
   deleted: true;
-}
-
-/**
- * Back-compat wrapper for the review screen's existing-recipe path. Prefer
- * executeSave({ kind: "revise" | "delete", ... }).
- *
- * `delete: true` removes the row (child rows via CASCADE, capture via the Scan
- * module) and returns `{ deleted: true }`; `draft` is ignored in that case.
- * Otherwise the draft is validated and written exactly like a new save.
- */
-export function saveExistingDraft(
-  id: number,
-  draft: RecipeDraft | null,
-  opts: SaveExistingDraftOptions = {},
-): SaveDraftResult | DeleteDraftResult {
-  if (opts.delete) return executeSave({ kind: "delete", recipeId: id });
-  // A null draft is rejected by validateSaveCommand (bad-draft); the wrapper
-  // adds no rule of its own.
-  return executeSave({ kind: "revise", recipeId: id, draft });
-}
-
-/** Back-compat alias for the revise path. Prefer saveExistingDraft. */
-export function updateDraft(id: number, draft: RecipeDraft): SaveDraftResult {
-  return savedDraft(executeSave({ kind: "revise", recipeId: id, draft }));
 }
 
 /** Remove an already-validated recipe id. */

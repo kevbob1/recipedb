@@ -27,8 +27,6 @@ import {
   executeSave,
   loadDraft,
   prepareDraft,
-  saveDraft,
-  updateDraft,
   SaveError,
 } from "./draft-store.server";
 import { validateSaveCommand } from "./save-command";
@@ -305,7 +303,7 @@ describe("retained scan bytes (ADR-0004 phase 3)", () => {
 describe("recipe_pages persistence", () => {
   it("round-trips per-page text and filenames through recipe_pages", () => {
     const draft = scanDraftWithPages(twoPages);
-    const { recipeId } = saveDraft(draft);
+    const { recipeId } = executeSave({ kind: "new", draft });
 
     const rows = pageRows(recipeId);
     expect(rows.map((r) => r.pageNo)).toEqual([1, 2]);
@@ -321,7 +319,7 @@ describe("recipe_pages persistence", () => {
   });
 
   it("keeps a draft without pages behaving exactly as before", () => {
-    const { recipeId } = saveDraft(scanDraftWithPages());
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraftWithPages() });
 
     expect(pageRows(recipeId)).toEqual([]);
     const loaded = loadDraft(recipeId);
@@ -330,14 +328,14 @@ describe("recipe_pages persistence", () => {
   });
 
   it("treats an empty pages array as no pages", () => {
-    const { recipeId } = saveDraft(scanDraftWithPages([]));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraftWithPages([]) });
 
     expect(pageRows(recipeId)).toEqual([]);
     expect(loadDraft(recipeId)!.pages).toBeUndefined();
   });
 
   it("replaces page rows wholesale on revise", () => {
-    const { recipeId } = saveDraft(scanDraftWithPages(twoPages));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraftWithPages(twoPages) });
 
     const revised = scanDraftWithPages([
       {
@@ -346,7 +344,7 @@ describe("recipe_pages persistence", () => {
         text: "1 cup flour (corrected)",
       },
     ]);
-    updateDraft(recipeId, revised);
+    executeSave({ kind: "revise", recipeId, draft: revised });
 
     const rows = pageRows(recipeId);
     expect(rows.length).toBe(1);
@@ -359,7 +357,7 @@ describe("recipe_pages persistence", () => {
       { pageNo: 1, imageFilename: "99/page-1.png", text: "later" },
       { pageNo: 2, imageFilename: "99/page-2.png", text: "also later" },
     ];
-    const { recipeId } = saveDraft(scanDraftWithPages(futurePages));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraftWithPages(futurePages) });
     expect(loadDraft(recipeId)!.pages).toEqual(futurePages);
   });
 });
@@ -549,7 +547,7 @@ describe("composeDraft pages", () => {
 
 describe("ocr_training_samples capture", () => {
   it("captures one unaccepted training row per saved page", () => {
-    const { recipeId } = saveDraft(scanDraftWithPages(twoPages));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraftWithPages(twoPages) });
     const rows = getDb()
       .select()
       .from(ocrTrainingSamples)
@@ -571,12 +569,13 @@ describe("ocr_training_samples capture", () => {
   });
 
   it("preserves original OCR text and accepts revised pages", () => {
-    const { recipeId } = saveDraft(scanDraftWithPages(twoPages));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraftWithPages(twoPages) });
     const correctedText = "Corrected page one";
-    updateDraft(
+    executeSave({
+      kind: "revise",
       recipeId,
-      scanDraftWithPages([{ ...twoPages[0], text: correctedText }]),
-    );
+      draft: scanDraftWithPages([{ ...twoPages[0], text: correctedText }]),
+    });
 
     const rows = getDb()
       .select()
@@ -595,7 +594,7 @@ describe("ocr_training_samples capture", () => {
   });
 
   it("captures no samples when saving or revising without pages", () => {
-    const { recipeId: emptyRecipeId } = saveDraft(scanDraftWithPages([]));
+    const { recipeId: emptyRecipeId } = executeSave({ kind: "new", draft: scanDraftWithPages([]) });
     expect(
       getDb()
         .select()
@@ -604,8 +603,8 @@ describe("ocr_training_samples capture", () => {
         .all(),
     ).toEqual([]);
 
-    const { recipeId } = saveDraft(scanDraftWithPages(twoPages));
-    updateDraft(recipeId, scanDraftWithPages([]));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraftWithPages(twoPages) });
+    executeSave({ kind: "revise", recipeId, draft: scanDraftWithPages([]) });
     const after = getDb()
       .select()
       .from(ocrTrainingSamples)
@@ -615,7 +614,7 @@ describe("ocr_training_samples capture", () => {
   });
 
   it("removes training rows when the recipe is deleted", () => {
-    const { recipeId } = saveDraft(scanDraftWithPages(twoPages));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraftWithPages(twoPages) });
     getDb().delete(recipes).where(eq(recipes.id, recipeId)).run();
 
     const rows = getDb()
@@ -639,7 +638,7 @@ describe("createDraft seam (ADR-0002)", () => {
     expect(draft.rawOcrText).toBe("Cookies\n1 cup flour");
 
     const withPages = { ...draft, pages: twoPages };
-    const { recipeId } = saveDraft(withPages);
+    const { recipeId } = executeSave({ kind: "new", draft: withPages });
     expect(loadDraft(recipeId)!.pages).toEqual(twoPages);
   });
 });

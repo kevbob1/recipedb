@@ -30,7 +30,7 @@ import path from "node:path";
 import { runMigrations } from "../db/migrate.server";
 import { ensureDataDirs, getImagesDir, getRawSqlite } from "../db/client.server";
 import { blankDraft, type RecipeDraft } from "./draft";
-import { deleteRecipe, loadDraft, saveDraft } from "./draft-store.server";
+import { deleteRecipe, executeSave, loadDraft } from "./draft-store.server";
 import {
   MAX_SCAN_UPLOAD_BYTES,
   ScanImageError,
@@ -239,7 +239,7 @@ describe("validateScanUpload", () => {
 describe("retention lifecycle", () => {
   it("writes the original bytes untouched and records loadDraft().imageFilename", () => {
     const bytes = pngBytes(64);
-    const { recipeId } = saveDraft(scanDraft("Retained scan"));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraft("Retained scan") });
     const rel = saveOriginalScanImage(recipeId, bytes);
 
     expect(rel).toBe(`${recipeId}/original.png`);
@@ -251,7 +251,7 @@ describe("retention lifecycle", () => {
   });
 
   it("overwrites the capture on re-upload instead of accumulating files", () => {
-    const { recipeId } = saveDraft(scanDraft("Re-upload"));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraft("Re-upload") });
     saveOriginalScanImage(recipeId, pngBytes(4));
     const rel = saveOriginalScanImage(recipeId, pngBytes(8));
     const files = fs.readdirSync(path.join(getImagesDir(), String(recipeId)));
@@ -259,7 +259,7 @@ describe("retention lifecycle", () => {
   });
 
   it("deletes the capture only when the recipe is deleted", () => {
-    const { recipeId } = saveDraft(scanDraft("Delete me"));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraft("Delete me") });
     const rel = saveOriginalScanImage(recipeId, pngBytes());
     attachImageFilename(recipeId, rel);
     const artifact = path.join(getImagesDir(), rel);
@@ -278,7 +278,7 @@ describe("retention lifecycle", () => {
 
 describe("reocrRecipe", () => {
   it("recognizes the stored capture and returns fresh text without writing", async () => {
-    const { recipeId } = saveDraft(scanDraft("Re-OCR me"));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraft("Re-OCR me") });
     const rel = saveOriginalScanImage(recipeId, pngBytes());
     attachImageFilename(recipeId, rel);
     const before = loadDraft(recipeId);
@@ -303,7 +303,7 @@ describe("reocrRecipe", () => {
   });
 
   it("throws no-image for a recipe without a capture", async () => {
-    const { recipeId } = saveDraft(scanDraft("No image"));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraft("No image") });
     await expect(
       reocrRecipe(recipeId, async () => ({ text: "", confidence: 0, ms: 0 })),
     ).rejects.toMatchObject({ code: "no-image" });
@@ -316,7 +316,7 @@ describe("reocrRecipe", () => {
   });
 
   it("throws image-missing when the row points at a deleted file", async () => {
-    const { recipeId } = saveDraft(scanDraft("Missing capture"));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraft("Missing capture") });
     attachImageFilename(recipeId, `${recipeId}/original.png`);
     await expect(
       reocrRecipe(recipeId, async () => ({ text: "", confidence: 0, ms: 0 })),
@@ -424,7 +424,7 @@ describe("validatePdfUpload + page/PDF storage (ADR-0004)", () => {
   });
 
   it("stores page rasters as page-<n>.<ext> and the PDF byte-for-byte", () => {
-    const { recipeId } = saveDraft(scanDraft("Page storage"));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraft("Page storage") });
 
     expect(savePageScanImage(recipeId, 2, pngBytes(8))).toBe(
       `${recipeId}/page-2.png`,
@@ -600,7 +600,7 @@ describe("POST /api/save-draft multipart page rasters + source PDF", () => {
   });
 
   it("drops checked page/PDF bytes on a revise without writing them", async () => {
-    const { recipeId } = saveDraft(scanDraft("Revise with bytes"));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraft("Revise with bytes") });
     const form = new FormData();
     form.set("draft", JSON.stringify({ ...pageDraft() }));
     form.set("recipeId", String(recipeId));
@@ -626,7 +626,7 @@ describe("POST /api/save-draft multipart page rasters + source PDF", () => {
 
 describe("POST /api/re-ocr (multipart-free transport)", () => {
   it("returns fresh OCR text for the stored capture", async () => {
-    const { recipeId } = saveDraft(scanDraft("Endpoint re-ocr"));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraft("Endpoint re-ocr") });
     const rel = saveOriginalScanImage(recipeId, pngBytes());
     attachImageFilename(recipeId, rel);
 
@@ -651,7 +651,7 @@ describe("POST /api/re-ocr (multipart-free transport)", () => {
   });
 
   it("returns 404 for a recipe with no retained capture", async () => {
-    const { recipeId } = saveDraft(scanDraft("No capture endpoint"));
+    const { recipeId } = executeSave({ kind: "new", draft: scanDraft("No capture endpoint") });
     const res = await handleReOcrRequest(
       authedRequest("http://localhost/api/re-ocr", {
         method: "POST",

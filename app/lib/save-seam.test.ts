@@ -23,8 +23,6 @@ import type { RecipeDraft } from "./draft";
 import {
   executeSave,
   loadDraft,
-  saveExistingDraft,
-  saveNewDraft,
 } from "./draft-store.server";
 import {
   SaveError,
@@ -91,7 +89,6 @@ describe("save seam — static guard", () => {
   it("route is an auth gate and one-command dispatcher", () => {
     expect(routeSource).toMatch(/requireAuth\(/);
     expect(routeSource).toMatch(/executeSave\(/);
-    expect(routeSource).not.toMatch(/saveNewDraft\(|saveExistingDraft\(/);
     expect(routeSource).not.toMatch(/request\.formData\(/);
     expect(routeSource).not.toMatch(/request\.json\(/);
     expect(routeSource).not.toMatch(/decodeDraftPayload/);
@@ -106,7 +103,7 @@ describe("save seam — static guard", () => {
     expect(httpSource).not.toMatch(/draft-store\.server/);
     expect(httpSource).not.toMatch(/decodeDraftPayload|prepareDraft\(/);
     expect(httpSource).not.toMatch(
-      /saveNewDraft|saveExistingDraft|saveDraft\(|updateDraft\(|deleteRecipe\(|executeSave\(/,
+      /deleteRecipe\(|executeSave\(/,
     );
   });
 });
@@ -350,41 +347,50 @@ describe("save seam — executeSave dispatch", () => {
   });
 });
 
-describe("save seam — store path wrappers", () => {
-  it("saveNewDraft creates a reviewable draft", () => {
-    const { recipeId, isDraft } = saveNewDraft(draft("Seam New"));
-    expect(isDraft).toBe(true);
-    expect(loadDraft(recipeId)?.title).toBe("Seam New");
+describe("save seam — store commands", () => {
+  it("new command creates a reviewable draft", () => {
+    const result = executeSave({
+      kind: "new",
+      draft: draft("Seam New"),
+    });
+    expect(result).toMatchObject({ isDraft: true });
+    expect(loadDraft(result.recipeId)?.title).toBe("Seam New");
   });
 
-  it("saveExistingDraft revises in place", () => {
-    const { recipeId } = saveNewDraft(draft("Seam Before"));
-    const result = saveExistingDraft(recipeId, draft("Seam After"));
+  it("revise command updates in place", () => {
+    const { recipeId } = executeSave({ kind: "new", draft: draft("Seam Before") });
+    const result = executeSave({
+      kind: "revise",
+      recipeId,
+      draft: draft("Seam After"),
+    });
     expect(result).toMatchObject({ recipeId, isDraft: true });
     expect(loadDraft(recipeId)?.title).toBe("Seam After");
 
-    expect(() => saveExistingDraft(999_999, draft("Missing"))).toThrowError(
-      SaveError,
-    );
+    expect(() =>
+      executeSave({ kind: "revise", recipeId: 999_999, draft: draft("Missing") }),
+    ).toThrowError(SaveError);
   });
 
-  it("saveExistingDraft honours the delete intent", () => {
-    const { recipeId } = saveNewDraft(draft("Seam Delete"));
-    expect(saveExistingDraft(recipeId, null, { delete: true })).toMatchObject({
+  it("delete command removes the stored recipe", () => {
+    const { recipeId } = executeSave({ kind: "new", draft: draft("Seam Delete") });
+    expect(executeSave({ kind: "delete", recipeId })).toMatchObject({
       recipeId,
       deleted: true,
     });
     expect(loadDraft(recipeId)).toBeNull();
 
-    expect(() => saveExistingDraft(recipeId, null, { delete: true })).toThrowError(
-      SaveError,
-    );
+    expect(() => executeSave({ kind: "delete", recipeId })).toThrowError(SaveError);
   });
 
   it("rolls the recipe back when the capture cannot be stored", () => {
     const before = getDb().select().from(recipes).all().length;
     expect(() =>
-      saveNewDraft(draft("Seam Bad Capture"), Buffer.from("not an image")),
+      executeSave({
+        kind: "new",
+        draft: draft("Seam Bad Capture"),
+        imageBytes: Buffer.from("not an image"),
+      }),
     ).toThrowError(ScanImageError);
     expect(getDb().select().from(recipes).all().length).toBe(before);
   });

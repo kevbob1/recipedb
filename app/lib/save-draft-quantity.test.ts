@@ -17,7 +17,7 @@ import { ensureDataDirs, getRawSqlite } from "../db/client.server";
 import { runMigrations } from "../db/migrate.server";
 import type { RecipeDraft } from "./draft";
 import { fromText, setQty } from "./ingredient-line";
-import { loadDraft, saveDraft } from "./draft-store.server";
+import { executeSave, loadDraft } from "./draft-store.server";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
@@ -72,7 +72,7 @@ function storedRow(recipeId: number): Record<string, unknown> {
 
 describe("saveDraft — parse on write", () => {
   it("persists the numeric view for a fraction, a range and an unparseable qty", () => {
-    const { recipeId } = saveDraft(draftWith("1/2", "cups"));
+    const { recipeId } = executeSave({ kind: "new", draft: draftWith("1/2", "cups") });
     expect(storedRow(recipeId)).toMatchObject({
       qty: "1/2",
       qty_amount: 0.5,
@@ -83,7 +83,7 @@ describe("saveDraft — parse on write", () => {
   });
 
   it("records a range with both ends and the unit", () => {
-    const { recipeId } = saveDraft(draftWith("2-3", "cloves"));
+    const { recipeId } = executeSave({ kind: "new", draft: draftWith("2-3", "cloves") });
     expect(storedRow(recipeId)).toMatchObject({
       qty_amount: 2,
       qty_amount2: 3,
@@ -93,7 +93,7 @@ describe("saveDraft — parse on write", () => {
   });
 
   it("marks a word quantity unparseable and keeps the text verbatim", () => {
-    const { recipeId } = saveDraft(draftWith("a pinch", null));
+    const { recipeId } = executeSave({ kind: "new", draft: draftWith("a pinch", null) });
     expect(storedRow(recipeId)).toMatchObject({
       qty: "a pinch",
       qty_amount: null,
@@ -108,7 +108,7 @@ describe("saveDraft — parse on write", () => {
     draft.ingredients[0] = line;
     expect(line.qtyAmount).toBe(3);
     // …and the write path derives the same numbers again.
-    const { recipeId } = saveDraft(draft);
+    const { recipeId } = executeSave({ kind: "new", draft });
     expect(storedRow(recipeId)).toMatchObject({
       qty: "3",
       qty_amount: 3,
@@ -126,7 +126,7 @@ describe("saveDraft — parse on write", () => {
       qtyUnitNormalized: "bogus",
       qtyParseStatus: "parsed",
     });
-    const { recipeId } = saveDraft(draft);
+    const { recipeId } = executeSave({ kind: "new", draft });
     expect(storedRow(recipeId)).toMatchObject({
       qty: "2",
       qty_amount: 2,
@@ -143,7 +143,7 @@ describe("saveDraft — parse on write", () => {
     draft.ingredients[0] = line;
     expect(line.qtyAmount).toBe(1.5);
     expect(line.qtyUnitNormalized).toBe("tbsp");
-    const { recipeId } = saveDraft(draft);
+    const { recipeId } = executeSave({ kind: "new", draft });
     expect(storedRow(recipeId)).toMatchObject({
       qty_amount: 1.5,
       qty_unit_normalized: "tbsp",
@@ -154,7 +154,7 @@ describe("saveDraft — parse on write", () => {
 
 describe("loadDraft — round-trip", () => {
   it("returns the text truth; the numeric view is re-derived from it", () => {
-    const { recipeId } = saveDraft(draftWith("2-3", "cloves"));
+    const { recipeId } = executeSave({ kind: "new", draft: draftWith("2-3", "cloves") });
     const loaded = loadDraft(recipeId);
     expect(loaded).not.toBeNull();
     const ing = loaded!.ingredients[0]!;
