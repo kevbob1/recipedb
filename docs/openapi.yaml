@@ -408,6 +408,29 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /api/backfill/training-export:
+    post:
+      operationId: exportOcrTrainingSamples
+      summary: Download accepted OCR training samples
+      description: Streams a read-only gzip-compressed tar archive for tesstrain.
+      responses:
+        "200":
+          description: Training export archive.
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: Download filename with a UTC timestamp.
+          content:
+            application/gzip:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
   /api/tokens:
     get:
       operationId: listApiTokens

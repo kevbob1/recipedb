@@ -3,6 +3,7 @@ import { type RouteConfig, index, route } from "@react-router/dev/routes";
 export default [
   route("api/backfill/scan-ocr", "routes/api.backfill-scan-ocr.tsx"),
   route("api/backfill/normalize-images", "routes/api.backfill-normalize-images.tsx"),
+  route("api/backfill/training-export", "routes/api.backfill-training-export.tsx"),
   route("api/tokens", "routes/api.tokens.ts"),
   // Public routes — never gated.
   index("routes/_index.tsx"),

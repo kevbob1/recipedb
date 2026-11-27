@@ -18,5 +18,19 @@ export function retainedName(recipeId: number, ext: string): string {
 }
 
 export function isStoredPath(filename: string): boolean {
-  return /^\d+\/.+$/.test(filename);
+  const segments = filename.split("/");
+  return (
+    segments.length >= 2 &&
+    /^\d+$/.test(segments[0] ?? "") &&
+    segments
+      .slice(1)
+      .every(
+        (segment) =>
+          segment.length > 0 &&
+          segment !== "." &&
+          segment !== ".." &&
+          !segment.includes("\\") &&
+          !segment.includes("\0"),
+      )
+  );
 }

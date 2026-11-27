@@ -35,5 +35,9 @@ describe("image path contract", () => {
     expect(isStoredPath("42/")).toBe(false);
     expect(isStoredPath("original.webp")).toBe(false);
     expect(isStoredPath("_staging/abc.webp")).toBe(false);
+    expect(isStoredPath("42/../secret.png")).toBe(false);
+    expect(isStoredPath("42/nested/../../secret.png")).toBe(false);
+    expect(isStoredPath("42\\secret.png")).toBe(false);
+    expect(isStoredPath("42/pages/page-1.png")).toBe(true);
   });
 });

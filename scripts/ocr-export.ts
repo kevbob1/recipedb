@@ -7,56 +7,15 @@
  *
  * Or pass the output directory as the first positional argument.
  */
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import type Database from "better-sqlite3";
 import { getDataDir, getRawSqlite } from "../app/db/client.server";
-import { isAccepted } from "../app/lib/scan/training-samples.server";
+import {
+  collectTrainingExport,
+  writeTrainingExport,
+  type OcrExportCounts,
+} from "../app/lib/scan/training-export.server";
 
-interface TrainingSample {
-  recipe_id: number;
-  page_no: number;
-  image_filename: string | null;
-  corrected_text: string;
-  accepted_at: number | null;
-}
-
-interface UnreviewedCount {
-  recipe_id: number;
-  count: number;
-}
-
-export interface OcrExportCounts {
-  exported: number;
-  skippedMissing: string[];
-  unreviewed: UnreviewedCount[];
-}
-
-const REQUIRED_COLUMNS = [
-  "recipe_id",
-  "page_no",
-  "image_filename",
-  "corrected_text",
-  "accepted_at",
-] as const;
-
-function assertTrainingTable(sqlite: Database.Database): void {
-  const columns = sqlite
-    .prepare("PRAGMA table_info(ocr_training_samples)")
-    .all() as { name: string }[];
-  if (columns.length === 0) {
-    throw new Error(
-      "OCR export requires the ocr_training_samples table (migration 0003); this data copy may be pre-0003.",
-    );
-  }
-  const names = new Set(columns.map((column) => column.name));
-  const missing = REQUIRED_COLUMNS.filter((column) => !names.has(column));
-  if (missing.length > 0) {
-    throw new Error(
-      `OCR export cannot use ocr_training_samples: missing column(s) ${missing.join(", ")}.`,
-    );
-  }
-}
+export type { OcrExportCounts } from "../app/lib/scan/training-export.server";
 
 /**
  * Export human-accepted samples and report rows that cannot be exported.
@@ -67,75 +26,9 @@ export function exportOcrTraining(
   dataDir: string,
   sqlite: Database.Database = getRawSqlite(),
 ): OcrExportCounts {
-  assertTrainingTable(sqlite);
-
-  const allSamples = sqlite
-    .prepare(
-      `SELECT recipe_id, page_no, image_filename, corrected_text, accepted_at
-         FROM ocr_training_samples
-        ORDER BY recipe_id, page_no`,
-    )
-    .all() as TrainingSample[];
-  const samples = allSamples.filter((sample) =>
-    isAccepted({ acceptedAt: sample.accepted_at }),
-  );
-  const unreviewed: UnreviewedCount[] = [];
-  for (const sample of allSamples) {
-    if (isAccepted({ acceptedAt: sample.accepted_at })) continue;
-    const previous = unreviewed.at(-1);
-    if (previous?.recipe_id === sample.recipe_id) previous.count += 1;
-    else unreviewed.push({ recipe_id: sample.recipe_id, count: 1 });
-  }
-
-  const imageDir = path.join(outDir, "images");
-  const groundTruthDir = path.join(outDir, "ground-truth");
-  mkdirSync(imageDir, { recursive: true });
-  mkdirSync(groundTruthDir, { recursive: true });
-
-  const filelist: string[] = [];
-  const skippedMissing: string[] = [];
-  for (const sample of samples) {
-    const baseName = `${sample.recipe_id}_page${sample.page_no}`;
-    const sampleName = `recipe ${sample.recipe_id}, page ${sample.page_no}`;
-    if (!sample.image_filename) {
-      skippedMissing.push(`${sampleName} (no image filename)`);
-      continue;
-    }
-
-    const sourceImage = path.join(dataDir, "images", sample.image_filename);
-    if (!existsSync(sourceImage)) {
-      skippedMissing.push(`${sampleName} (${sample.image_filename})`);
-      continue;
-    }
-
-    const extension = path.extname(sample.image_filename);
-    copyFileSync(sourceImage, path.join(imageDir, `${baseName}${extension}`));
-    writeFileSync(
-      path.join(groundTruthDir, `${baseName}.gt.txt`),
-      sample.corrected_text,
-      "utf8",
-    );
-    filelist.push(baseName);
-  }
-
-  const counts: OcrExportCounts = {
-    exported: filelist.length,
-    skippedMissing,
-    unreviewed,
-  };
-  writeFileSync(
-    path.join(outDir, "filelist.txt"),
-    filelist.length > 0 ? `${filelist.join("\n")}\n` : "",
-    "utf8",
-  );
-
-  const unreviewedTotal = unreviewed.reduce((total, row) => total + row.count, 0);
-  writeFileSync(
-    path.join(outDir, "README.md"),
-    `This export contains accepted OCR training samples only (human-reviewed or backfilled). Unreviewed rows are excluded; ground truth is the accepted corrected text, and images are copied from the matching DATA_DIR image files.\n\nExported ${counts.exported} sample(s); skipped ${counts.skippedMissing.length} accepted sample(s) with missing images; ${unreviewedTotal} unreviewed row(s) across ${unreviewed.length} recipe(s).\n`,
-    "utf8",
-  );
-  return counts;
+  const exportData = collectTrainingExport(dataDir, sqlite);
+  writeTrainingExport(exportData, outDir);
+  return exportData.counts;
 }
 
 // Direct invocation prints the export summary and always closes the DB.

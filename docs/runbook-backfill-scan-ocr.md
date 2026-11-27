@@ -112,17 +112,22 @@ Accepted count should equal the rows of every backfilled/reviewed recipe's pages
 
 ### 6. Optional — export training data (Phase 6)
 
-Never against the live PVC. Copy the data down, unpack, export:
+Download the accepted training samples directly as a tar.gz archive:
 
 ```bash
-kubectl cp default/<pod>:/data/recipes.db ~/recipedb-training/<stamp>/recipes.db
-kubectl cp default/<pod>:/data/images     ~/recipedb-training/<stamp>/images
-DATA_DIR=~/recipedb-training/<stamp> npm run ocr:export -- ~/recipedb-training/<stamp>/tesstrain
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+curl -sS -b /tmp/recipedb-cookies.txt -X POST \
+  -o "recipedb-training-${stamp}.tar.gz" \
+  http://localhost:3000/api/backfill/training-export
+mkdir -p "recipedb-training-${stamp}"
+tar -xzf "recipedb-training-${stamp}.tar.gz" -C "recipedb-training-${stamp}"
 ```
 
-The summary lists per-recipe **unreviewed** sample counts — the work list for
-Review (or another backfill) before the next export. Training itself (tesstrain)
-runs on the host, never in the container.
+The archive extracts as a tesstrain directory (`images/`, `ground-truth/`,
+`filelist.txt`, and `README.md`). Alternatively, send
+`-H "Authorization: Bearer $RECIPEDB_TOKEN"` instead of the cookie jar.
+`npm run ocr:export` against a copy of `/data` remains the offline fallback.
+Training itself (tesstrain) still runs on the host, never in the container.
 
 ### 7. Done
 
