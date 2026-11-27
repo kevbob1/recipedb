@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { asc, eq } from "drizzle-orm";
-import { getDb } from "../db/client.server";
+import { getDataDir, getDb } from "../db/client.server";
 import {
   recipePages,
   recipes,
@@ -10,6 +10,7 @@ import { executeSave } from "./draft-store.server";
 import { joinPageText } from "./review-pages";
 import { ingest } from "./scan/recognize-node.server";
 import { resolveStoredImagePath } from "./scan/storage.server";
+import { rasterizeSourcePdf } from "./scan/rasterize.server";
 import {
   isRecipeReviewed,
   reviewedRecipeIds,
@@ -117,7 +118,23 @@ export async function backfillRecipe(
   }
 
   try {
-    const sources = pageSources(recipeId, recipe.imageFilename);
+    let sources = pageSources(recipeId, recipe.imageFilename);
+    if (sources.length === 0) {
+      const sourcePath = resolveStoredImagePath(`${recipeId}/source.pdf`);
+      if (sourcePath && fs.existsSync(sourcePath)) {
+        const rasterized = await rasterizeSourcePdf(getDataDir(), recipeId);
+        executeSave({
+          kind: "pages",
+          recipeId,
+          pages: rasterized.map(({ pageNumber, imageFilename }) => ({
+            pageNo: pageNumber,
+            imageFilename,
+            text: "",
+          })),
+        });
+        sources = pageSources(recipeId, recipe.imageFilename);
+      }
+    }
     if (sources.length === 0) throw new Error("missing-image");
     const pages = [];
     for (const source of sources) {

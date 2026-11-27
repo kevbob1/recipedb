@@ -11,7 +11,7 @@ The intake path from choosing an entry method through import or recognition and 
 _Avoid_: Intake workflow
 
 **Backfill**:
-Server-side re-recognition of retained Originals for already-stored Recipes. It is an explicit machine-origin rewrite and is destructive by design.
+Server-side re-recognition of retained Originals for already-stored Recipes. For a legacy PDF-only Scan with no Page rows, backfill rasterizes its retained source PDF with Poppler before re-recognition. It is an explicit machine-origin rewrite and is destructive by design.
 _Avoid_: Migration, re-import
 
 **Draft**:

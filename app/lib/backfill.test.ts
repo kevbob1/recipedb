@@ -44,7 +44,83 @@ function recognized(textByImage: Record<string, string>, confidence = 0.8) {
   });
 }
 
+function makePdf(pageCount: number): Buffer {
+  const pageIds = Array.from({ length: pageCount }, (_, index) => 3 + index * 2);
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageCount} >>`,
+  ];
+  for (const pageId of pageIds) {
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents ${pageId + 1} 0 R >>`,
+      "<< /Length 1 >>\nstream\n \nendstream",
+    );
+  }
+  let contents = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(contents));
+    contents += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(contents);
+  contents += `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
+  contents += offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
+    .join("");
+  contents += `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(contents);
+}
+
 describe("backfillRecipe", () => {
+  it("rasterizes source-PDF-only recipes, persists page rows through executeSave, then OCRs each raster", async () => {
+    const recipeId = makeRecipe();
+    const recipeDir = path.join(getImagesDir(), String(recipeId));
+    fs.mkdirSync(recipeDir, { recursive: true });
+    fs.writeFileSync(path.join(recipeDir, "source.pdf"), makePdf(2));
+    const seen: string[] = [];
+
+    const result = await backfillRecipe(recipeId, {
+      recognize: async ({ bytes }) => {
+        const pageRows = getDb()
+          .select({ pageNo: recipePages.pageNo, imageFilename: recipePages.imageFilename })
+          .from(recipePages)
+          .where(eq(recipePages.recipeId, recipeId))
+          .all();
+        expect(pageRows).toHaveLength(2);
+        seen.push(bytes.toString("hex", 0, 8));
+        return {
+          text: seen.length === 1 ? "PDF recipe title" : "1 cup flour",
+          confidence: 0.8,
+          ms: 1,
+        };
+      },
+      clock: () => new Date("2026-04-01T00:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      recipeId,
+      status: "backfilled",
+      pageCount: 2,
+      confidence: 0.8,
+    });
+    expect(seen).toEqual([
+      "89504e470d0a1a0a",
+      "89504e470d0a1a0a",
+    ]);
+    expect(
+      getDb()
+        .select({ pageNo: recipePages.pageNo, imageFilename: recipePages.imageFilename })
+        .from(recipePages)
+        .where(eq(recipePages.recipeId, recipeId))
+        .orderBy(recipePages.pageNo)
+        .all(),
+    ).toEqual([
+      { pageNo: 1, imageFilename: `${recipeId}/page-1.png` },
+      { pageNo: 2, imageFilename: `${recipeId}/page-2.png` },
+    ]);
+  });
+
   it("preserves first-persisted raw OCR on an ordinary revise", () => {
     const recipeId = makeRecipe();
     getDb()

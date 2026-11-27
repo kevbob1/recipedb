@@ -276,6 +276,12 @@ export type SaveCommand =
       /** Backfill acceptance timestamp; only valid with capture: "backfill". */
       acceptedAt?: Date;
     }
+  | {
+      /** Persist rasterized page sources without changing recipe fields/samples. */
+      kind: "pages";
+      recipeId: number;
+      pages: unknown;
+    }
   | { kind: "delete"; recipeId: number };
 
 /** One uploaded page raster: the page it belongs to, and its untouched bytes. */
@@ -307,6 +313,11 @@ export type ValidatedSaveCommand =
       recognized: RecipeDraft | null;
       capture: "accept" | "backfill" | "reparse";
       acceptedAt?: Date;
+    }
+  | {
+      kind: "pages";
+      recipeId: number;
+      pages: Omit<NewRecipePage, "recipeId">[];
     }
   | { kind: "delete"; recipeId: number };
 
@@ -419,6 +430,23 @@ export function validateSaveCommand(command: SaveCommand): ValidatedSaveCommand 
         capture,
         acceptedAt: command.acceptedAt,
       };
+    }
+    case "pages": {
+      const recipeId = requireRecipeId(command.recipeId);
+      const pages = preparePages(command.pages);
+      for (const page of pages) {
+        if (
+          !page.imageFilename ||
+          !isStoredPath(page.imageFilename) ||
+          !page.imageFilename.startsWith(`${recipeId}/page-${page.pageNo}.`)
+        ) {
+          throw new SaveError(
+            "bad-draft",
+            `Page ${page.pageNo} must reference its retained raster.`,
+          );
+        }
+      }
+      return { kind: "pages", recipeId, pages };
     }
     case "delete":
       return { kind: "delete", recipeId: requireRecipeId(command.recipeId) };

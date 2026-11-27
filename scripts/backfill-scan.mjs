@@ -106,7 +106,7 @@ for (const target of targets) {
       throw new Error(`HTTP ${response.status}${data?.error ? `: ${data.error}` : ""}`);
     }
     const details = Object.entries(data ?? {})
-      .filter(([key]) => key === "status" || /count|pages|written|updated/i.test(key))
+      .filter(([key]) => key === "status" || /count|pages|written|updated|confidence|error/i.test(key))
       .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
       .join(" ");
     console.log(`${target.id}\t${target.title}\t${details || "completed"}`);

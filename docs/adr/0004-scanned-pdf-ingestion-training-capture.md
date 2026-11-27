@@ -1,7 +1,7 @@
 # ADR-0004: Scanned-PDF ingestion doubles as OCR training capture
 
 Date: 2026-11-22
-Status: Accepted (amended 2026-11-23: first-persistence capture; amended 2026-11-23: current-page-set and image-layout semantics)
+Status: Accepted (amended 2026-11-23: first-persistence capture; amended 2026-11-23: current-page-set and image-layout semantics; amended 2026-11-27: backfill rasterization)
 
 ## Context
 
@@ -21,9 +21,11 @@ rules:
 
 1. **One PDF is one Recipe, always.** Pages are a long document, never split
    into several recipes. Uploads cap at 5 pages per PDF.
-2. **Rasterization is client-side** (pdf.js → per-page PNG) and the pages run
-   through the existing browser OCR. The server never rasterizes a PDF; the
-   original PDF bytes are stored untouched as Provenance at
+2. **Ingestion rasterization is client-side** (pdf.js → per-page PNG) and the
+   pages run through the existing browser OCR. For backfill only, the server
+   may rasterize a retained source PDF with Poppler (`pdftoppm`) when the
+   recipe has no page rows or legacy image filename. The original PDF bytes
+   are stored untouched as Provenance at
    `images/<recipeId>/source.pdf` (not linked in the UI yet), alongside
    `page-<n>.<ext>` rasters; `image_filename` points at page 1.
 3. **Per-page review is the training capture seam, but capture does not wait
@@ -52,9 +54,10 @@ corrections — and backfilled pairs make old camera scans trainable too.
 
 ## Considered Options
 
-- **Server-side rasterization** (poppler in the container): rejected — first
-  pass OCR already runs in the browser, and pdf.js keeps the container image
-  unchanged; the stored page rasters are what re-OCR consumes anyway.
+- **Server-side rasterization for initial ingestion** (poppler in the
+  container): rejected — first-pass OCR already runs in the browser, and
+  pdf.js keeps the container image unchanged; the stored page rasters are what
+  re-OCR consumes anyway.
 - **Reconstructing "corrected text" from accepted structured fields** instead
   of per-page review: rejected — normalized quantities and joined steps make
   noisy OCR ground truth, poisoning the dataset from day one.
@@ -90,3 +93,17 @@ pages that no longer belong to the Recipe. Every stored image lives under its
 recipe directory (`images/<recipeId>/…`). URL-import bytes stage at
 `images/_staging/<uuid>.webp` and relocate at save; flat `images/<n>.webp`
 paths are retired.
+
+## Amendment (2026-11-27, third)
+
+The first backfill pass now handles legacy PDF-only scan recipes (including
+recipes imported by `scripts/upload-scans.mjs`) that have `source.pdf` but no
+`recipe_pages` rows or legacy `image_filename`. It rasterizes the retained PDF
+server-side with Poppler's `pdftoppm`, stores the results as
+`images/<recipeId>/page-<n>.png`, persists their page rows through
+`executeSave`, then runs the existing page recognizer and backfill save path.
+Existing page rows and legacy single-image recipes keep their previous
+resolution behavior. The runtime and development images include
+`poppler-utils`. pdfjs + node-canvas was rejected because of native build
+weight; Poppler avoids adding a native Node module while keeping rasterization
+local to the container.

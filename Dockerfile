@@ -36,7 +36,7 @@ RUN mkdir -p /data
 # what the base image already has (bash, tar, cp, node, mkdir, du, date).
 # The cleanup keeps the apt lists out of the image (~2 MB).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends openssh-client rsync \
+ && apt-get install -y --no-install-recommends openssh-client rsync poppler-utils \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/node_modules ./node_modules
@@ -78,7 +78,7 @@ ARG DEV_GID=1000
 # git is required by scripts/patch-coverage.mjs (merge-base + diff), which
 # `make check` runs inside this container.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 make g++ ca-certificates git \
+ && apt-get install -y --no-install-recommends python3 make g++ ca-certificates git poppler-utils \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

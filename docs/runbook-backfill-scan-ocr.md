@@ -1,7 +1,9 @@
 # Runbook — Backfill scanned-PDF/camera recipes (Phase 5)
 
-Prerequisite: the image containing ADR-0004 phases 1–4 + 5 deployed (`deploy/k8s/deploy.sh`),
-app serving as the single replica with the `recipedb-data` PVC.
+Prerequisite: the image containing ADR-0004 phases 1–4 + 5 and `poppler-utils`
+deployed (`deploy/k8s/deploy.sh`), app serving as the single replica with the
+`recipedb-data` PVC. The runtime image must include Poppler (`pdftoppm`) for
+source-PDF-only legacy scans.
 
 ## What this does
 
@@ -18,6 +20,11 @@ rows** — a recipe whose pages a human reviewed (or that was already backfilled
 skipped. Recipes imported as PDFs but never reviewed are IN the target set by
 design: running backfill over them is how an unreviewed corpus becomes accepted
 training data without per-page review.
+
+PDF recipes imported by `scripts/upload-scans.mjs` with only `source.pdf` and
+no page rows are rasterized automatically on their first backfill pass. Deploy
+an image containing `poppler-utils` before running backfill; it retains
+`page-<n>.png` rasters and continues through the normal per-page OCR path.
 
 ## Risks — read before Step 4
 

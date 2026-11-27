@@ -226,9 +226,40 @@ export function executeSave(command: SaveCommand): SaveResult {
         validated.acceptedAt,
         validated.recognized,
       );
+    case "pages":
+      return replacePageSources(validated.recipeId, validated.pages);
     case "delete":
       return removeRecipe(validated.recipeId);
   }
+}
+
+/**
+ * Persist rasterized page references through the save seam without changing
+ * recipe fields or training samples. The following backfill revise writes OCR
+ * text and captures samples atomically through the ordinary revise path.
+ */
+function replacePageSources(
+  id: number,
+  pages: Omit<NewRecipePage, "recipeId">[],
+): SaveDraftResult {
+  const db = getDb();
+  db.transaction(() => {
+    const existing = db
+      .select({ id: recipes.id })
+      .from(recipes)
+      .where(eq(recipes.id, id))
+      .get();
+    if (!existing) {
+      throw new SaveError("not-found", `Recipe #${id} was not found.`);
+    }
+    db.delete(recipePages).where(eq(recipePages.recipeId, id)).run();
+    if (pages.length > 0) {
+      db.insert(recipePages)
+        .values(pages.map((page) => ({ ...page, recipeId: id })))
+        .run();
+    }
+  });
+  return { recipeId: id, isDraft: true };
 }
 
 /**

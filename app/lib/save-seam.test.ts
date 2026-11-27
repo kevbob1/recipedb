@@ -357,6 +357,35 @@ describe("save seam — store commands", () => {
     ).toThrowError(SaveError);
   });
 
+  it("pages command rejects a raster outside the recipe/page convention", () => {
+    expect(() =>
+      validateSaveCommand({
+        kind: "pages",
+        recipeId: 7,
+        pages: [
+          { pageNo: 1, imageFilename: "8/page-1.png", text: "" },
+        ],
+      }),
+    ).toThrow(/must reference its retained raster/);
+    expect(() =>
+      validateSaveCommand({
+        kind: "pages",
+        recipeId: 7,
+        pages: [{ pageNo: 1, imageFilename: null, text: "" }],
+      }),
+    ).toThrow(/must reference its retained raster/);
+  });
+
+  it("pages command on a missing recipe throws not-found", () => {
+    expect(() =>
+      executeSave({
+        kind: "pages",
+        recipeId: 999_999,
+        pages: [{ pageNo: 1, imageFilename: "999999/page-1.png", text: "" }],
+      }),
+    ).toThrowError(SaveError);
+  });
+
   it("delete command removes the stored recipe", () => {
     const { recipeId } = executeSave({ kind: "new", draft: draft("Seam Delete") });
     expect(executeSave({ kind: "delete", recipeId })).toMatchObject({
