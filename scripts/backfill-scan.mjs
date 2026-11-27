@@ -1,13 +1,11 @@
 #!/usr/bin/env node
 /**
- * Usage: RECIPEDB_FAMILY_PASSWORD=... node scripts/backfill-scan.mjs [--dry-run|--force <id>]
+ * Usage: RECIPEDB_TOKEN=rdb_... node scripts/backfill-scan.mjs [--dry-run|--force <id>]
  * Run against a port-forward. See docs/runbook-backfill-scan-ocr.md.
  */
-import { createInterface } from "node:readline/promises";
-import { stdin, stderr } from "node:process";
 
 const base = (process.env.RECIPEDB_BASE ?? "http://localhost:3000").replace(/\/+$/, "");
-const password = process.env.RECIPEDB_FAMILY_PASSWORD ?? await promptForPassword();
+const token = process.env.RECIPEDB_TOKEN;
 const args = process.argv.slice(2);
 let dryRun = false;
 const forceIds = [];
@@ -32,77 +30,37 @@ function fatal(message) {
   process.exit(1);
 }
 
-async function promptForPassword() {
-  const rl = createInterface({ input: stdin, terminal: false });
-  try {
-    stderr.write("Family password: ");
-    if (stdin.isTTY && typeof stdin.setRawMode === "function") {
-      // Raw mode disables terminal echo; non-terminal readline does not echo it.
-      stdin.setRawMode(true);
-      try {
-        return await rl.question("");
-      } finally {
-        stdin.setRawMode(false);
-      }
-    }
-    return await rl.question("");
-  } finally {
-    rl.close();
-  }
+if (!token?.startsWith("rdb_")) {
+  fatal("authentication failed; set RECIPEDB_TOKEN to an rdb_-prefixed API token");
 }
 
-function cookieFrom(response) {
-  const setCookie = response.headers.get("set-cookie");
-  const match = setCookie?.match(/(?:^|,\s*)recipedb_session=([^;,]*)/);
-  return match ? `recipedb_session=${match[1]}` : null;
-}
-
-async function login() {
+async function requestJson(url, options = {}) {
   let response;
   try {
-    response = await fetch(`${base}/login`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ password, next: "/" }),
-      redirect: "manual",
+    response = await fetch(url, {
+      ...options,
+      headers: { ...options.headers, authorization: `Bearer ${token}` },
     });
-  } catch {
-    fatal("login failed (wrong password or unreachable host)");
-  }
-  const cookie = cookieFrom(response);
-  if (response.status !== 302 || !cookie) {
-    fatal("login failed (wrong password or unreachable host)");
-  }
-  return cookie;
-}
-
-async function requestJson(url, options, isLogin = false) {
-  let response;
-  try {
-    response = await fetch(url, options);
   } catch (error) {
     throw new Error(error instanceof Error ? error.message : "request failed");
   }
   if (response.status === 401) {
-    fatal("authentication failed; check RECIPEDB_FAMILY_PASSWORD");
+    fatal("authentication failed; check RECIPEDB_TOKEN");
   }
   let data;
   try {
     data = await response.json();
   } catch {
-    if (isLogin) return { response, data: null };
     throw new Error(`HTTP ${response.status}: invalid JSON response`);
   }
   return { response, data };
 }
 
-const cookie = await login();
 let listResponse;
 let listing;
 try {
   ({ response: listResponse, data: listing } = await requestJson(
     `${base}/api/backfill/scan-ocr`,
-    { headers: { cookie } },
   ));
 } catch (error) {
   fatal(`could not list scan backfill targets: ${error instanceof Error ? error.message : "request failed"}`);
@@ -140,7 +98,7 @@ for (const target of targets) {
   try {
     const { response, data } = await requestJson(`${base}/api/backfill/scan-ocr`, {
       method: "POST",
-      headers: { cookie, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ recipeId: target.id, ...(forceIds.length > 0 ? { force: true } : {}) }),
       signal: AbortSignal.timeout(5 * 60 * 1000),
     });

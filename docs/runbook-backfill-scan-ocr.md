@@ -63,8 +63,10 @@ curl -s -b /tmp/recipedb-cookies.txt -X POST \
 
 ### 3. Preview targets (no mutations)
 
+The backfill and upload scripts now use a minted bearer token: set `RECIPEDB_TOKEN` to the one-time secret from `curl -b <browser-session-cookie> -H 'content-type: application/json' -d '{"name":"scan backfill"}' http://localhost:3000/api/tokens` using a browser-authenticated session.
+
 ```bash
-RECIPEDB_FAMILY_PASSWORD=<FAMILY_PASSWORD> npm run backfill:scan -- --dry-run
+RECIPEDB_TOKEN=<API_TOKEN> npm run backfill:scan -- --dry-run
 ```
 
 Lists targets (id + title) and skipped recipes (reason). Expected first run on
@@ -74,7 +76,7 @@ one entry per unreviewed scan recipe.
 ### 4. Backfill
 
 ```bash
-RECIPEDB_FAMILY_PASSWORD=<FAMILY_PASSWORD> npm run backfill:scan
+RECIPEDB_TOKEN=<API_TOKEN> npm run backfill:scan
 ```
 
 One POST per target; each line reports `backfilled / skipped / failed`. Nonzero
@@ -85,7 +87,7 @@ Manual retry of one recipe (bypasses the reviewed-skip check — destructive,
 replaces whatever earlier acceptance wrote):
 
 ```bash
-RECIPEDB_FAMILY_PASSWORD=<FAMILY_PASSWORD> npm run backfill:scan -- --force <recipeId>
+RECIPEDB_TOKEN=<API_TOKEN> npm run backfill:scan -- --force <recipeId>
 ```
 
 ### 5. Spot-check
