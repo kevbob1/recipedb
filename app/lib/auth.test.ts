@@ -21,6 +21,8 @@ import {
   requireAuth,
   verifyPassword,
 } from "./auth.server";
+import { mintToken } from "./tokens.server";
+import { withDb } from "./testing/with-db";
 import {
   buildClearSessionCookie,
   parseSessionValue,
@@ -34,6 +36,8 @@ const PASSWORD = "open-sesame-42";
 let originalHash: string | undefined;
 let originalSecret: string | undefined;
 let originalCookieSecure: string | undefined;
+
+withDb();
 
 beforeEach(() => {
   originalHash = process.env.FAMILY_PASSWORD_HASH;
@@ -333,6 +337,47 @@ describe("requireAuth", () => {
     });
     const session = requireAuth(req);
     expect(session.issuedAtMs).toBeGreaterThan(Date.now() - 5_000);
+  });
+
+  it("accepts a valid bearer token, including on an operator API route", () => {
+    const token = mintToken("operator");
+    const req = new Request("https://x/api/backfill/scan-ocr", {
+      headers: { authorization: `Bearer ${token.secret}` },
+    });
+    expect(requireAuth(req, { isApi: true }).issuedAtMs).toBe(
+      token.createdAt.getTime(),
+    );
+  });
+
+  it("returns the API unauthorized response for a bad bearer token", async () => {
+    const req = new Request("https://x/api/save-draft", {
+      headers: { authorization: "Bearer rdb_not-a-valid-token" },
+    });
+    let thrown: Response | null = null;
+    try {
+      requireAuth(req, { isApi: true });
+    } catch (error) {
+      thrown = error as Response;
+    }
+    expect(thrown?.status).toBe(401);
+    await expect(thrown?.json()).resolves.toEqual({ error: "unauthorized" });
+  });
+
+  it("prefers a valid session cookie over a bearer token", () => {
+    const cookieValue = extractCookieValue(
+      buildSessionCookie(Date.now() - 10_000),
+      SESSION_COOKIE_NAME,
+    );
+    const token = mintToken("secondary");
+    const req = new Request("https://x/api/save-draft", {
+      headers: {
+        authorization: `Bearer ${token.secret}`,
+        cookie: `${SESSION_COOKIE_NAME}=${cookieValue}`,
+      },
+    });
+    expect(requireAuth(req, { isApi: true }).issuedAtMs).toBeLessThan(
+      Date.now() - 5_000,
+    );
   });
 
   it("throws a 302 to /login for an HTML route when unauthenticated", () => {

@@ -26,7 +26,7 @@ export function withDb(): void {
 
   beforeEach(() => {
     getRawSqlite().exec(
-      "DELETE FROM ocr_training_samples; DELETE FROM recipe_pages; DELETE FROM ingredient_lines; DELETE FROM steps; DELETE FROM tags; DELETE FROM recipes;",
+      "DELETE FROM api_tokens; DELETE FROM save_events; DELETE FROM ocr_training_samples; DELETE FROM recipe_pages; DELETE FROM ingredient_lines; DELETE FROM steps; DELETE FROM tags; DELETE FROM recipes;",
     );
     fs.rmSync(getImagesDir(), { recursive: true, force: true });
     fs.mkdirSync(getImagesDir(), { recursive: true });

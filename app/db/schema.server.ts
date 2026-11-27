@@ -224,6 +224,54 @@ export const ocrTrainingSamples = sqliteTable(
   (table) => [index("ocr_training_samples_recipe_idx").on(table.recipeId)],
 );
 
+/** API credentials are stored only as SHA-256 hashes; plaintext is shown once. */
+export const apiTokens = sqliteTable(
+  "api_tokens",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (table) => [uniqueIndex("api_tokens_token_hash_uq").on(table.tokenHash)],
+);
+
+/**
+ * Write-once, append-only snapshots of recipe saves. Rows are retained as
+ * history and removed only when their recipe is deleted.
+ */
+export const saveEvents = sqliteTable(
+  "save_events",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    recipeId: integer("recipe_id")
+      .notNull()
+      .references(() => recipes.id, { onDelete: "cascade" }),
+    captureMode: text("capture_mode")
+      .$type<"save" | "revise" | "backfill" | "reparse">()
+      .notNull(),
+    /** Machine's pre-edit draft snapshot, when available. */
+    recognizedJson: text("recognized_json"),
+    /** Complete RecipeDraft persisted by this event. */
+    savedJson: text("saved_json").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (table) => [
+    check(
+      "save_events_capture_mode_valid",
+      sql`${table.captureMode} IN ('save', 'revise', 'backfill', 'reparse')`,
+    ),
+    index("save_events_recipe_created_idx").on(
+      table.recipeId,
+      table.createdAt,
+    ),
+  ],
+);
+
 /** Useful composite types for code that reads from these tables. */
 export type Recipe = typeof recipes.$inferSelect;
 export type NewRecipe = typeof recipes.$inferInsert;
@@ -237,6 +285,8 @@ export type RecipePage = typeof recipePages.$inferSelect;
 export type NewRecipePage = typeof recipePages.$inferInsert;
 export type OcrTrainingSample = typeof ocrTrainingSamples.$inferSelect;
 export type NewOcrTrainingSample = typeof ocrTrainingSamples.$inferInsert;
+export type ApiToken = typeof apiTokens.$inferSelect;
+export type SaveEvent = typeof saveEvents.$inferSelect;
 
 // Re-export `primaryKey` so consumer code that composes composite keys doesn't
 // have to import from drizzle-orm directly. (No current consumer, but keeps the

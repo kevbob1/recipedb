@@ -59,6 +59,7 @@ describe("migrations + FTS5", () => {
       "0001_scaling_quantity",
       "0002_scan_image",
       "0003_scan_pages",
+      "0004_machine_api",
     ]);
 
     // Re-running is a no-op.

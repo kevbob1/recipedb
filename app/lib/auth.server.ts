@@ -19,6 +19,7 @@ import {
   readSessionFromRequest,
   type SessionInfo,
 } from "./session.server";
+import { verifyTokenSecret } from "./tokens.server";
 
 export type AuthEnv = {
   familyPasswordHash: string | undefined;
@@ -117,6 +118,12 @@ export function requireAuth(
 ): SessionInfo {
   const session = readSessionFromRequest(request);
   if (session) return session;
+  const authorization = request.headers.get("authorization");
+  const bearer = authorization?.match(/^Bearer\s+(rdb_[A-Za-z0-9_-]+)$/i)?.[1];
+  if (bearer) {
+    const token = verifyTokenSecret(bearer);
+    if (token) return { issuedAtMs: token.createdAt.getTime() };
+  }
   if (opts.isApi) {
     throw new Response(
       JSON.stringify({ error: "unauthorized" }),

@@ -8,11 +8,13 @@
  */
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
+import { getTableConfig } from "drizzle-orm/sqlite-core";
 import { getDb, getRawSqlite } from "./client.server";
 import {
   CATEGORIES,
   ingredientLines,
   recipes,
+  saveEvents,
   type NewRecipe,
 } from "./schema.server";
 import { withDb } from "../lib/testing/with-db";
@@ -113,5 +115,12 @@ describe("ingredient line qty preservation", () => {
         })
         .run(),
     ).toThrow();
+  });
+});
+
+describe("save event schema", () => {
+  it("cascades save events when their recipe is deleted", () => {
+    const foreignKey = getTableConfig(saveEvents).foreignKeys[0];
+    expect(foreignKey?.onDelete).toBe("cascade");
   });
 });
