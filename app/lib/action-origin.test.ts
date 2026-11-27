@@ -3,13 +3,15 @@
  * `400 Bad Request` while `curl` was fine.
  *
  * React Router 7 guards every mutation request: the `Origin` header must
- * match `new URL(request.url).origin`, unless the origin's host appears in
+ * match `new URL(request.url).origin`, unless the origin is allowed by
  * `allowedActionOrigins`. Behind the nginx ingress TLS terminates at the
  * edge, so this process sees `http://recipedb.k.pd.o` while the browser
  * correctly sends `Origin: https://recipedb.k.pd.o`. The scheme-only
  * mismatch tripped the guard, which answered `400 Bad Request` before the
  * login action ever ran. `curl` sends no `Origin` header at all, so it
- * skipped the check and looked healthy.
+ * skipped the check and looked healthy. The wildcard now also permits
+ * desktop clients that send the literal `Origin: null`; route-level auth
+ * remains responsible for rejecting unauthenticated API requests.
  *
  * This test drives the REAL production build over a plain-HTTP socket with
  * the headers the ingress adds — the same path `server.js` serves — so it
@@ -32,6 +34,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { hashSync } from "@node-rs/argon2";
 import { createRequestListener } from "@react-router/node";
+import { handleCorsHttpRequest } from "../lib/cors.server";
 import type { ServerBuild } from "react-router";
 
 const PASSWORD = "open-sesame-42";
@@ -80,25 +83,24 @@ function ensureFreshBuild(): void {
   }
 }
 
-/** POST /login over plain HTTP, exactly as the pod receives it. */
-function postLogin(
-  password: string,
-  extraHeaders: Record<string, string> = {},
+/** Request over plain HTTP, exactly as the pod receives it. */
+function send(
+  method: string,
+  pathname: string,
+  headers: Record<string, string>,
+  body?: string,
 ): Promise<LoginResponse> {
-  const body = new URLSearchParams({ password, next: "/" }).toString();
   return new Promise((resolve, reject) => {
     const req = httpRequest(
       {
         host: "127.0.0.1",
         port,
-        path: "/login",
-        method: "POST",
-        headers: {
-          host: PUBLIC_HOST,
-          "content-type": "application/x-www-form-urlencoded",
-          "content-length": Buffer.byteLength(body),
-          ...extraHeaders,
-        },
+        path: pathname,
+        method,
+        headers:
+          body === undefined
+            ? headers
+            : { "content-length": Buffer.byteLength(body), ...headers },
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -114,6 +116,43 @@ function postLogin(
     );
     req.on("error", reject);
     req.end(body);
+  });
+}
+
+function post(
+  pathname: string,
+  body: string,
+  contentType: string,
+  extraHeaders: Record<string, string> = {},
+): Promise<LoginResponse> {
+  return send("POST", pathname, {
+    host: PUBLIC_HOST,
+    "content-type": contentType,
+    ...extraHeaders,
+  }, body);
+}
+
+/** Restfox-style CORS preflight, answered by cors.server before React Router. */
+function preflight(pathname: string, origin: string): Promise<LoginResponse> {
+  return send("OPTIONS", pathname, {
+    host: PUBLIC_HOST,
+    origin,
+    "access-control-request-method": "POST",
+    "access-control-request-headers": "content-type",
+  });
+}
+
+function postLogin(
+  password: string,
+  extraHeaders: Record<string, string> = {},
+): Promise<LoginResponse> {
+  const body = new URLSearchParams({ password, next: "/" }).toString();
+  return post("/login", body, "application/x-www-form-urlencoded", extraHeaders);
+}
+
+function postTokens(origin: string): Promise<LoginResponse> {
+  return post("/api/tokens", JSON.stringify({ name: "Restfox test" }), "application/json", {
+    origin,
   });
 }
 
@@ -141,6 +180,9 @@ beforeAll(async () => {
 
   const listener = createRequestListener({ build });
   server = createServer((req, res) => {
+    // Same order as server.js: CORS preflights are answered before the
+    // React Router listener ever sees them.
+    if (handleCorsHttpRequest(req, res)) return;
     Promise.resolve(listener(req, res)).catch(() => {
       if (!res.headersSent) {
         res.statusCode = 500;
@@ -162,9 +204,12 @@ afterAll(async () => {
 });
 
 describe("login POST origin handling (#25)", () => {
-  it("bakes the public hosts into the server build", () => {
+  it("bakes the wildcard plus the public hosts into the server build", () => {
     // Fail loudly on a stale build: this is the knob the guard reads.
+    // "*" admits the literal `null` origin and single-label hosts only, so
+    // the app's own multi-label public hosts must stay listed as well.
     expect(build.allowedActionOrigins).toEqual([
+      "*",
       "recipedb.k.pd.o",
       "recipedb.p.drule.org",
     ]);
@@ -187,7 +232,7 @@ describe("login POST origin handling (#25)", () => {
     expect(cookie).toContain("Secure");
   });
 
-  it("still rejects a foreign origin (the guard stays armed)", async () => {
+  it("continues rejecting unrelated multi-label foreign origins", async () => {
     const res = await postLogin(PASSWORD, {
       ...BROWSER_HEADERS,
       origin: "https://evil.example",
@@ -205,5 +250,33 @@ describe("login POST origin handling (#25)", () => {
     const cookie = setCookies(ok);
     expect(cookie).toContain("recipedb_session=");
     expect(cookie).not.toContain("Secure");
+  });
+});
+
+describe("Restfox desktop client (Origin: null)", () => {
+  it("answers the CORS preflight with 204 via the cors.server path", async () => {
+    const res = await preflight("/api/tokens", "null");
+    expect(res.status).toBe(204);
+    expect(res.headers["access-control-allow-origin"]).toBe("null");
+    expect(res.headers["access-control-allow-methods"]).toBe(
+      "GET, POST, DELETE, OPTIONS",
+    );
+    expect(res.headers["access-control-allow-headers"]).toBe("content-type");
+  });
+
+  it("lets the POST reach /api/tokens route-level auth and returns 401 JSON", async () => {
+    const res = await postTokens("null");
+    expect(res.status).toBe(401);
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(JSON.parse(res.body)).toEqual({ error: "unauthorized" });
+  });
+
+  it("also lets a POST from the HTTPS public host through the guard", async () => {
+    // The wildcard alone would NOT admit this multi-label origin; the
+    // explicit host entries keep browser/HTTPS API clients working.
+    const res = await postTokens(PUBLIC_ORIGIN);
+    expect(res.status).toBe(401);
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(JSON.parse(res.body)).toEqual({ error: "unauthorized" });
   });
 });

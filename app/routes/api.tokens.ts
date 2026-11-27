@@ -46,6 +46,8 @@ export async function action({ request }: Route.ActionArgs) {
   return Response.json(mintToken(name), { status: 201 });
 }
 
-export default function ApiTokensRoute() {
-  return null;
-}
+// Resource route: exporting no `default`/`ErrorBoundary` component keeps React
+// Router's handleResourceRequest in charge, which passes every loader/action
+// Response through verbatim — JSON 200/201/400/401/404 as-is — instead of
+// rendering them through the document/error pipeline (which would turn the
+// 401 into an HTML error page for clients like Restfox).

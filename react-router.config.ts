@@ -1,26 +1,20 @@
 import type { Config } from "@react-router/dev/config";
 
 /**
- * Hosts allowed to submit actions, on top of the default
- * "Origin must equal request.url's origin" rule.
+ * Kevin's choice 2026-11-27: desktop API clients (Restfox on Electron,
+ * `file://` UI) send the literal `Origin: null`, which the React Router
+ * action guard treats as a foreign origin. `"*"` admits it — plus any
+ * single-label host (plain-HTTP LAN / docker) — but the matcher keeps
+ * rejecting multi-label hosts, so the app's own public hosts stay listed
+ * explicitly (they also cover the HTTPS-vs-HTTP mismatch behind the
+ * TLS-terminating ingress). `curl` sends no `Origin` header at all, so it
+ * already bypasses this check.
  *
- * WHY THIS EXISTS: React Router refuses any mutation request whose `Origin`
- * header does not match the origin of `request.url` (its built-in CSRF
- * guard). Behind the nginx ingress TLS terminates at the edge, so the pod
- * only ever sees the plain-HTTP upstream URL (`http://recipedb.k.pd.o/...`)
- * while the browser correctly sends `Origin: https://recipedb.k.pd.o`. That
- * scheme-only mismatch made every real browser login POST fail with
- * `400 Bad Request` before the action ran, while `curl` (which sends no
- * `Origin` header at all) sailed through and looked healthy.
- *
- * Entries are HOSTS, not full origins: React Router compares each entry
- * against `new URL(origin).host` (micromatch globs like `**.k.pd.o` are
- * supported). Keep this list to the hosts we actually serve over TLS — a
- * wider entry would re-open the CSRF hole the guard exists to close.
- * Plain-HTTP LAN/docker access needs no entry: there `Origin` and
- * `request.url` already agree.
+ * While `"*"` is listed the guard no longer blocks same-SITE sibling origins
+ * under *.k.pd.o / *.p.drule.org; the SameSite=Lax session cookie is the
+ * remaining defense. Do NOT weaken it below Lax while the wildcard is set.
  */
-const allowedActionOrigins = ["recipedb.k.pd.o", "recipedb.p.drule.org"];
+const allowedActionOrigins = ["*", "recipedb.k.pd.o", "recipedb.p.drule.org"];
 
 export default {
   ssr: true,

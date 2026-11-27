@@ -1,11 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { buildSessionCookie } from "../lib/auth.server";
 import { withDb } from "../lib/testing/with-db";
-import {
-  action,
-  default as ApiTokensRoute,
-  loader,
-} from "./api.tokens";
+import { action, loader } from "./api.tokens";
 
 withDb();
 
@@ -80,7 +76,6 @@ describe("API token management route", () => {
     );
     expect(missing.status).toBe(404);
     expect(await missing.json()).toEqual({ error: "not-found" });
-    expect(ApiTokensRoute()).toBeNull();
   });
 
   it("rejects malformed and invalid names", async () => {
