@@ -3,9 +3,11 @@ import { type RouteConfig, index, route } from "@react-router/dev/routes";
 export default [
   route("api/backfill/scan-ocr", "routes/api.backfill-scan-ocr.tsx"),
   route("api/backfill/normalize-images", "routes/api.backfill-normalize-images.tsx"),
+  route("api/tokens", "routes/api.tokens.ts"),
   // Public routes — never gated.
   index("routes/_index.tsx"),
   route("health", "routes/health.tsx"),
+  route("openapi.yaml", "routes/openapi.ts"),
   route("login", "routes/login.tsx"),
   route("logout", "routes/logout.tsx"),
 
@@ -13,6 +15,10 @@ export default [
   // route's loader/action. Health is intentionally public for the
   // proxy / orchestrator; login/logout are public by definition.
   route("add", "routes/add.tsx"),
+  route("api/recipes", "routes/api.recipes.ts"),
+  route("api/recipes/:id", "routes/api.recipes.$id.ts"),
+  route("api/recipes/:id/history", "routes/api.recipes.$id.history.ts"),
+  route("api/adjustments", "routes/api.adjustments.ts"),
   route("api/import-url", "routes/api.import-url.ts"),
   route("api/save-draft", "routes/api.save-draft.ts"),
   // Explicit re-OCR against a retained scan capture (#28).

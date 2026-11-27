@@ -1,0 +1,1090 @@
+openapi: 3.1.0
+info:
+  title: recipedb machine API
+  version: 0.1.0
+  description: |
+    JSON API for the single-household recipedb application. HTML SSR routes
+    (`/`, `/add`, `/login`, `/recipes/:id`, and related pages) are intentionally
+    excluded. Authentication is by a bearer token (`rdb_`-prefixed, ADR-0005)
+    or the `recipedb_session` session cookie. Token management itself requires
+    the session cookie. Design context: `docs/adr/0005*` and `docs/adr/0006*`.
+
+servers:
+  - url: /
+
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Check application and database health
+      security: []
+      responses:
+        "200":
+          description: Database query succeeded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, db]
+                properties:
+                  status:
+                    const: ok
+                  db:
+                    type: string
+                    const: ok
+              example:
+                status: ok
+                db: ok
+
+  /openapi.yaml:
+    get:
+      operationId: getOpenApiSpec
+      summary: Download this API specification
+      security: []
+      responses:
+        "200":
+          description: This OpenAPI document.
+          content:
+            text/yaml:
+              schema:
+                type: string
+
+  /api/import-url:
+    post:
+      operationId: importUrl
+      summary: Import a recipe from a web page
+      description: Fetches and parses the page server-side; the raw HTML is not returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  format: uri
+            example:
+              url: https://example.com/recipes/soup
+      responses:
+        "200":
+          description: Imported draft and retained image name, if any.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [draft, imageFilename]
+                properties:
+                  draft:
+                    $ref: "#/components/schemas/RecipeDraft"
+                  imageFilename:
+                    type: [string, "null"]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /api/save-draft:
+    post:
+      operationId: saveDraft
+      summary: Create, revise, or delete a recipe
+      description: |
+        Send a JSON body for ordinary saves, or multipart form data when
+        uploading capture files. Multipart page rasters use `page-1`,
+        `page-2`, etc. `recognized` is the original unedited draft snapshot;
+        it may be omitted or set to null. A delete uses `intent: delete` and
+        `recipeId`, without a draft.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/RecipeDraft"
+                - type: object
+                  properties:
+                    draft:
+                      $ref: "#/components/schemas/RecipeDraft"
+                    recognized:
+                      oneOf:
+                        - $ref: "#/components/schemas/RecipeDraft"
+                        - type: "null"
+                    recipeId:
+                      type: integer
+                      minimum: 1
+                    intent:
+                      const: delete
+            example:
+              draft:
+                title: Tomato soup
+                titleConfidence: ok
+                category: other
+                categoryConfidence: ok
+                yield: null
+                yieldConfidence: bad
+                tags: []
+                sourceType: manual
+                sourceUrl: null
+                rawOcrText: null
+                favorite: false
+                ingredients: []
+                steps: []
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                draft:
+                  type: string
+                  description: JSON-serialized RecipeDraft; required except for delete intent.
+                recognized:
+                  type: string
+                  description: JSON-serialized RecipeDraft or the literal string `null`.
+                recipeId:
+                  type: string
+                  description: Positive integer; omit when creating a recipe.
+                intent:
+                  type: string
+                  enum: [delete]
+                image:
+                  type: string
+                  format: binary
+                  description: Optional original capture image.
+                page-1:
+                  type: string
+                  format: binary
+                  description: Optional first page raster; additional pages use page-2, page-3, etc.
+                pdf:
+                  type: string
+                  format: binary
+                  description: Optional original scanned PDF.
+      responses:
+        "200":
+          description: Recipe saved/revised, or deleted.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [recipeId]
+                    properties:
+                      recipeId:
+                        type: integer
+                  - type: object
+                    required: [recipeId, deleted]
+                    properties:
+                      recipeId:
+                        type: integer
+                      deleted:
+                        type: boolean
+                        const: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/re-ocr:
+    post:
+      operationId: reOcrRecipe
+      summary: Run OCR against a recipe's retained capture
+      description: Returns OCR results without changing the saved recipe.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: integer
+                  minimum: 1
+            example:
+              id: 12
+      responses:
+        "200":
+          description: OCR result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recipeId, text, confidence, ms]
+                properties:
+                  recipeId:
+                    type: integer
+                  text:
+                    type: string
+                  confidence:
+                    type: number
+                  ms:
+                    type: number
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/scan-images/{filename}:
+    get:
+      operationId: getScanImage
+      summary: Read a retained scan artifact
+      description: |
+        `filename` is the retained image path relative to the image store and
+        may contain nested path segments (for example `12/page-1.png`).
+      parameters:
+        - name: filename
+          in: path
+          required: true
+          description: Retained artifact path, including any nested segments.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Stored image or PDF bytes.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /api/backfill/scan-ocr:
+    get:
+      operationId: listScanOcrBackfillTargets
+      summary: List scan OCR backfill targets
+      responses:
+        "200":
+          description: Scan recipes divided into eligible and reviewed targets.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [targets, skipped]
+                properties:
+                  targets:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BackfillTarget"
+                  skipped:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/BackfillTarget"
+                        - type: object
+                          required: [reason]
+                          properties:
+                            reason:
+                              const: reviewed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: backfillScanOcr
+      summary: Backfill OCR or reparse a scan recipe
+      description: |
+        `mode: reparse` selects reparse instead of training-sample backfill.
+        `dryRun: true` reports the prospective status without running OCR.
+        Set `force: true` to proceed for a reviewed recipe.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recipeId]
+              properties:
+                recipeId:
+                  type: integer
+                  minimum: 1
+                force:
+                  type: boolean
+                dryRun:
+                  type: boolean
+                mode:
+                  type: string
+                  enum: [reparse]
+            example:
+              recipeId: 12
+              mode: reparse
+              dryRun: true
+      responses:
+        "200":
+          description: Backfill/reparse result, or dry-run status.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/BackfillResult"
+                  - $ref: "#/components/schemas/ReparseResult"
+                  - type: object
+                    required: [recipeId, status]
+                    properties:
+                      recipeId:
+                        type: integer
+                      status:
+                        type: string
+                        enum: [skipped-reviewed, skipped-not-scan, would-backfill, would-reparse]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/backfill/normalize-images:
+    get:
+      operationId: previewImageNormalization
+      summary: Preview image normalization
+      description: Returns dry-run moves and reports orphan files without deleting them.
+      responses:
+        "200":
+          description: Normalization preview.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NormalizeResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: normalizeImages
+      summary: Normalize stored image paths and clean orphan files
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keepOrphans:
+                  type: boolean
+      responses:
+        "200":
+          description: Moves, failures, and orphan deletion/reporting results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NormalizeResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/tokens:
+    get:
+      operationId: listApiTokens
+      summary: List API token metadata
+      description: Requires a session cookie; bearer-token authentication is not accepted for token management.
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Token metadata; secrets are not returned.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ApiToken"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: mintApiToken
+      summary: Create an API token
+      description: Requires a session cookie. The plaintext secret is returned only once.
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+            example:
+              name: kitchen tablet
+      responses:
+        "201":
+          description: Created token, including its one-time plaintext secret.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiToken"
+                  - type: object
+                    required: [secret]
+                    properties:
+                      secret:
+                        type: string
+                        pattern: "^rdb_"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    delete:
+      operationId: revokeApiToken
+      summary: Revoke an API token
+      description: Requires a session cookie.
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Token revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked:
+                    type: boolean
+                    const: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/recipes:
+    get:
+      operationId: listRecipes
+      summary: List recipe summaries
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Recipe summaries ordered by recipe ID.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RecipeSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /api/recipes/{id}:
+    get:
+      operationId: getRecipe
+      summary: Get a recipe draft
+      parameters:
+        - $ref: "#/components/parameters/RecipeId"
+      responses:
+        "200":
+          description: Current editable recipe draft.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecipeDraft"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /api/recipes/{id}/history:
+    get:
+      operationId: getRecipeHistory
+      summary: Get recipe save history
+      parameters:
+        - $ref: "#/components/parameters/RecipeId"
+      responses:
+        "200":
+          description: Save snapshots in chronological order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SaveEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /api/adjustments:
+    get:
+      operationId: exportAdjustments
+      summary: Export recipe adjustment history and OCR page samples
+      parameters:
+        - name: source
+          in: query
+          description: Filter recipes by source type.
+          schema:
+            type: string
+            enum: [scan, url, manual]
+        - name: include
+          in: query
+          description: Set to `machine` to include machine-generated adjustment groups.
+          schema:
+            type: string
+            enum: [machine]
+        - name: accepted
+          in: query
+          description: Set to `true` to include only accepted OCR training samples.
+          schema:
+            type: boolean
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Adjustment data and page samples, one item per selected recipe.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [recipeId, sourceType, rawOcrText, adjustments, pages]
+                  properties:
+                    recipeId:
+                      type: integer
+                    sourceType:
+                      type: string
+                      enum: [scan, url, manual]
+                    rawOcrText:
+                      type: [string, "null"]
+                    adjustments:
+                      $ref: "#/components/schemas/AdjustmentGroup"
+                    pages:
+                      type: array
+                      items:
+                        $ref: "#/components/schemas/PageSample"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: rdb_-prefixed token
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: recipedb_session
+
+  parameters:
+    RecipeId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+    Offset:
+      name: offset
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+
+  responses:
+    BadRequest:
+      description: Invalid request or domain validation failure.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid authentication.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: unauthorized
+    NotFound:
+      description: Requested recipe, token, or artifact was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    MethodNotAllowed:
+      description: Method is not supported for this route.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PayloadTooLarge:
+      description: Uploaded capture exceeds the upload size limit.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ServerError:
+      description: Unexpected server-side failure.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+    RecipeDraft:
+      type: object
+      required:
+        - title
+        - titleConfidence
+        - category
+        - categoryConfidence
+        - yield
+        - yieldConfidence
+        - tags
+        - sourceType
+        - sourceUrl
+        - rawOcrText
+        - favorite
+        - ingredients
+        - steps
+      properties:
+        title:
+          type: string
+        titleConfidence:
+          $ref: "#/components/schemas/Confidence"
+        category:
+          type: string
+          description: Closed application category list.
+        categoryConfidence:
+          $ref: "#/components/schemas/Confidence"
+        yield:
+          type: [string, "null"]
+        yieldConfidence:
+          $ref: "#/components/schemas/Confidence"
+        tags:
+          type: array
+          items:
+            type: string
+        sourceType:
+          type: string
+          enum: [url, scan, manual]
+        sourceUrl:
+          type: [string, "null"]
+        rawOcrText:
+          type: [string, "null"]
+        imageFilename:
+          type: [string, "null"]
+          description: Relative retained image path; may be omitted.
+        pages:
+          type: array
+          items:
+            $ref: "#/components/schemas/DraftPage"
+        favorite:
+          type: boolean
+        ingredients:
+          type: array
+          items:
+            $ref: "#/components/schemas/DraftIngredient"
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/DraftStep"
+        raw:
+          type: string
+          description: Optional non-persisted raw source for the review drawer.
+
+    DraftIngredient:
+      type: object
+      required: [text, qty, unit, item, note, confidence]
+      properties:
+        text:
+          type: string
+        qty:
+          type: string
+        unit:
+          type: [string, "null"]
+        item:
+          type: string
+        note:
+          type: [string, "null"]
+        confidence:
+          $ref: "#/components/schemas/Confidence"
+
+    DraftStep:
+      type: object
+      required: [position, text]
+      properties:
+        position:
+          type: integer
+        text:
+          type: string
+
+    DraftPage:
+      type: object
+      required: [pageNo, imageFilename, text]
+      properties:
+        pageNo:
+          type: integer
+          minimum: 1
+        imageFilename:
+          type: [string, "null"]
+        text:
+          type: string
+
+    Confidence:
+      type: string
+      enum: [ok, warn, bad]
+
+    SaveEvent:
+      type: object
+      required: [id, captureMode, createdAt, hasRecognized, event]
+      properties:
+        id:
+          type: integer
+        captureMode:
+          type: string
+          enum: [save, revise, backfill, reparse]
+        createdAt:
+          type: string
+          format: date-time
+        hasRecognized:
+          type: boolean
+        event:
+          type: object
+          required: [recognized, saved]
+          properties:
+            recognized:
+              oneOf:
+                - $ref: "#/components/schemas/RecipeDraft"
+                - type: "null"
+            saved:
+              $ref: "#/components/schemas/RecipeDraft"
+
+    Adjustment:
+      oneOf:
+        - type: object
+          required: [kind, action, field, before, after]
+          properties:
+            kind:
+              const: field
+            action:
+              const: modify
+            field:
+              type: string
+              enum: [title, category, yieldText, favorite, sourceUrl, imageFilename]
+            before:
+              oneOf:
+                - type: string
+                - type: boolean
+                - type: "null"
+            after:
+              oneOf:
+                - type: string
+                - type: boolean
+                - type: "null"
+        - type: object
+          required: [kind, action, before, after]
+          properties:
+            kind:
+              const: tag
+            action:
+              type: string
+              enum: [add, remove]
+            before:
+              type: [string, "null"]
+            after:
+              type: [string, "null"]
+        - type: object
+          required: [kind, action, before, after, beforeIndex, afterIndex]
+          properties:
+            kind:
+              const: ingredient
+            action:
+              type: string
+              enum: [modify, add, remove]
+            before:
+              oneOf:
+                - $ref: "#/components/schemas/DraftIngredient"
+                - type: "null"
+            after:
+              oneOf:
+                - $ref: "#/components/schemas/DraftIngredient"
+                - type: "null"
+            beforeIndex:
+              type: [integer, "null"]
+            afterIndex:
+              type: [integer, "null"]
+        - type: object
+          required: [kind, action, before, after, beforeIndex, afterIndex]
+          properties:
+            kind:
+              const: step
+            action:
+              type: string
+              enum: [modify, add, remove]
+            before:
+              oneOf:
+                - $ref: "#/components/schemas/DraftStep"
+                - type: "null"
+            after:
+              oneOf:
+                - $ref: "#/components/schemas/DraftStep"
+                - type: "null"
+            beforeIndex:
+              type: [integer, "null"]
+            afterIndex:
+              type: [integer, "null"]
+
+    RecipeAdjustment:
+      type: object
+      required: [eventId, recipeId, timestamp, captureMode, origin, adjustments, pageChanges]
+      properties:
+        eventId:
+          type: integer
+        recipeId:
+          type: integer
+        timestamp:
+          type: string
+          format: date-time
+        captureMode:
+          type: string
+          enum: [save, revise, backfill, reparse]
+        origin:
+          type: string
+          enum: [import, human, machine]
+        adjustments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Adjustment"
+        pageChanges:
+          type: array
+          items:
+            type: object
+            required: [pageNo, before, after, changed]
+            properties:
+              pageNo:
+                type: integer
+              before:
+                type: [string, "null"]
+              after:
+                type: [string, "null"]
+              changed:
+                type: boolean
+
+    AdjustmentGroup:
+      type: object
+      required: [adjustments, machineAdjustments]
+      properties:
+        adjustments:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecipeAdjustment"
+        machineAdjustments:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecipeAdjustment"
+
+    PageSample:
+      type: object
+      required: [pageNo, rawOcrText, correctedText, accepted]
+      properties:
+        pageNo:
+          type: integer
+        rawOcrText:
+          type: string
+        correctedText:
+          type: string
+        accepted:
+          type: boolean
+
+    RecipeSummary:
+      type: object
+      required: [id, title, category, sourceType, favorite, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        category:
+          type: string
+        sourceType:
+          type: string
+          enum: [scan, url, manual]
+        favorite:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    BackfillTarget:
+      type: object
+      required: [id, title]
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+
+    BackfillResult:
+      type: object
+      required: [recipeId, status]
+      properties:
+        recipeId:
+          type: integer
+        status:
+          type: string
+          enum: [backfilled, skipped-reviewed, skipped-not-scan, skipped-empty-ocr, failed]
+        pageCount:
+          type: integer
+        confidence:
+          type: number
+        error:
+          type: string
+
+    ReparseResult:
+      type: object
+      required: [recipeId, status]
+      properties:
+        recipeId:
+          type: integer
+        status:
+          type: string
+          enum: [reparsed, skipped, error]
+        fieldsParsed:
+          type: object
+          properties:
+            title:
+              type: string
+            ingredientCount:
+              type: integer
+            stepCount:
+              type: integer
+        reason:
+          type: string
+          enum: [not-found, not-scan, reviewed, empty-ocr]
+        error:
+          type: string
+
+    NormalizeResult:
+      type: object
+      required: [moved, failed, orphans]
+      properties:
+        moved:
+          type: array
+          items:
+            type: object
+            required: [recipeId, from, to]
+            properties:
+              recipeId:
+                type: integer
+              from:
+                type: string
+              to:
+                type: string
+        failed:
+          type: array
+          items:
+            type: object
+            required: [recipeId, from, reason]
+            properties:
+              recipeId:
+                type: integer
+              from:
+                type: string
+              reason:
+                type: string
+        orphans:
+          type: object
+          properties:
+            deleted:
+              type: array
+              items:
+                type: string
+            reported:
+              type: array
+              items:
+                type: string
+
+    ApiToken:
+      type: object
+      required: [id, name, createdAt]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
