@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDraft } from "./import";
 import {
   bindPageText,
@@ -6,8 +6,68 @@ import {
   pageTextSetter,
   reparseFromPages,
   reparseSetter,
+  createReviewSavePayload,
+  reviewSaveHandler,
   withPageText,
 } from "./review-pages";
+
+describe("createReviewSavePayload", () => {
+  it("pairs the edited draft with the original recognized snapshot", () => {
+    const initial = createDraft({ kind: "scan", text: "Original title" });
+    const edited = { ...initial, title: "Edited title" };
+    const payload = createReviewSavePayload(initial)(edited);
+
+    expect(payload).toEqual({ draft: edited, recognized: initial });
+    expect(payload.draft).toBe(edited);
+  });
+
+  it("isolates the snapshot from later initial and returned-payload mutations", () => {
+    const initial = createDraft({ kind: "scan", text: "Original title" });
+    const buildPayload = createReviewSavePayload(initial);
+    initial.title = "Mutated initial";
+    const first = buildPayload({ ...initial, title: "Edited" });
+    first.recognized.title = "Mutated output";
+
+    expect(buildPayload(initial).recognized.title).toBe("Original title");
+  });
+});
+
+describe("reviewSaveHandler", () => {
+  it("saves the paired payload and signals success", async () => {
+    const initial = createDraft({ kind: "scan", text: "Original title" });
+    const edited = { ...initial, title: "Edited title" };
+    const save = vi.fn(async () => 7);
+    const onSaved = vi.fn();
+    const handler = reviewSaveHandler(
+      createReviewSavePayload(initial),
+      save,
+      edited,
+      onSaved,
+    );
+
+    await handler();
+
+    expect(save).toHaveBeenCalledWith(edited, null, { recognized: initial });
+    expect(onSaved).toHaveBeenCalledWith(true);
+  });
+
+  it("keeps the save error in the save seam without signaling success", async () => {
+    const initial = createDraft({ kind: "scan", text: "Original title" });
+    const save = vi.fn(async () => {
+      throw new Error("Save failed");
+    });
+    const onSaved = vi.fn();
+
+    await reviewSaveHandler(
+      createReviewSavePayload(initial),
+      save,
+      initial,
+      onSaved,
+    )();
+
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+});
 
 describe("joinPageText", () => {
   it("joins page texts with a blank line", () => {

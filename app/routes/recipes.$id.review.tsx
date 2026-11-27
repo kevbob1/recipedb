@@ -19,6 +19,7 @@ import {
   countNeedEyes,
 } from "../lib/draft";
 import { loadDraft } from "../lib/draft-store.server";
+import { createReviewSavePayload, reviewSaveHandler } from "../lib/review-pages";
 import { useSaveDraft } from "../lib/use-save-draft";
 import { requireAuth } from "../lib/auth.server";
 
@@ -43,6 +44,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 export default function ReviewRoute({ loaderData }: Route.ComponentProps) {
   const initial = loaderData.draft;
   const [draft, setDraft] = useState<RecipeDraft>(initial);
+  const [buildSavePayload] = useState(() => createReviewSavePayload(initial));
   const [params] = useSearchParams();
   const [saved, setSaved] = useState(params.get("saved") === "1");
   // The save seam owns the endpoint, the busy flag, and the error message.
@@ -75,14 +77,12 @@ export default function ReviewRoute({ loaderData }: Route.ComponentProps) {
       }
       : undefined;
 
-  async function save() {
-    try {
-      await saveDraft(draft);
-      setSaved(true);
-    } catch {
-      // Message already lives in the hook's error state.
-    }
-  }
+  const save = reviewSaveHandler(
+    buildSavePayload,
+    saveDraft,
+    draft,
+    setSaved,
+  );
 
   async function remove() {
     if (

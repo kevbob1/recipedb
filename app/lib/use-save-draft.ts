@@ -47,6 +47,8 @@ export interface UseSaveDraft {
  * original PDF, which the server stores byte-for-byte.
  */
 export interface SaveDraftExtras {
+  /** Original recognized draft, before human edits. */
+  recognized?: RecipeDraft | null;
   /** Page rasters in page order; the server names them page-<n>. */
   pageBlobs?: Blob[];
   /** The original scanned PDF. */
@@ -74,6 +76,9 @@ async function postSave(
     // draft untouched (#28, ADR-0004).
     const form = new FormData();
     if (draft) form.set("draft", JSON.stringify(draft));
+    if (extras?.recognized) {
+      form.set("recognized", JSON.stringify(extras.recognized));
+    }
     if (recipeId !== undefined) form.set("recipeId", String(recipeId));
     if (photoFile) form.set("image", photoFile, photoFile.name || "capture.png");
     pageBlobs.forEach((blob, index) => {
@@ -84,6 +89,7 @@ async function postSave(
   } else {
     body = JSON.stringify({
       ...(draft ? { draft } : {}),
+      ...(extras?.recognized ? { recognized: extras.recognized } : {}),
       ...(recipeId !== undefined ? { recipeId } : {}),
       ...(intent ? { intent } : {}),
     });

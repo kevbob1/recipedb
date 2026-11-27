@@ -46,6 +46,45 @@ export function reparseFromPages(draft: RecipeDraft): RecipeDraft {
   return { ...reparsed, pages };
 }
 
+/**
+ * Capture the load-time version once and pair it with each edited save draft.
+ * The recognized snapshot is cloned both when captured and when emitted so a
+ * caller cannot mutate the reference used for later saves.
+ */
+export function createReviewSavePayload(
+  initial: RecipeDraft,
+): (draft: RecipeDraft) => { draft: RecipeDraft; recognized: RecipeDraft } {
+  const recognized = structuredClone(initial);
+  return (draft) => ({
+    draft,
+    recognized: structuredClone(recognized),
+  });
+}
+
+/** Bind the current edited draft and save seam to the review button. */
+export function reviewSaveHandler(
+  buildPayload: (
+    draft: RecipeDraft,
+  ) => { draft: RecipeDraft; recognized: RecipeDraft },
+  save: (
+    draft: RecipeDraft,
+    photoFile: null,
+    extras: { recognized: RecipeDraft },
+  ) => Promise<unknown>,
+  draft: RecipeDraft,
+  onSaved: (saved: boolean) => void,
+): () => Promise<void> {
+  return async () => {
+    try {
+      const payload = buildPayload(draft);
+      await save(payload.draft, null, { recognized: payload.recognized });
+      onSaved(true);
+    } catch {
+      // The save seam owns the displayable error state.
+    }
+  };
+}
+
 /** Build the callback that stores an edited page's text in the draft. */
 export function pageTextSetter(
   draft: RecipeDraft,

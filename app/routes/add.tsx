@@ -47,6 +47,7 @@ import {
 import {
   createAddFlowActions,
   initialAddFlowState,
+  persistWithRecognized,
   type AddFlowState,
   type Entry,
 } from "../lib/add-flow";
@@ -98,7 +99,7 @@ export function StepperShell({
   const actions = createAddFlowActions(flow, setFlow, {
     fetchUrlImport: requestUrlImport,
     recognize: recognizeText,
-    persist: (draft, photoFile) => saveToServer(draft, photoFile),
+    persist: persistWithRecognized(saveToServer),
     bulkSeams: appBulkSeams(recognizeText, saveToServer),
     clearSaveError,
   });

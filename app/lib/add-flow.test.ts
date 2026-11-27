@@ -7,6 +7,7 @@ import {
   importFiles,
   importUrl,
   initialAddFlowState,
+  persistWithRecognized,
   recognizePhoto,
   resetBulk,
   restart,
@@ -20,6 +21,20 @@ import { MAX_SCAN_UPLOAD_BYTES } from "./scan/limits";
 function image(name: string, type = "image/jpeg"): File {
   return new File(["image bytes"], name, { type });
 }
+
+describe("persistWithRecognized", () => {
+  it("passes the recognized snapshot as save extras", async () => {
+    const draft = initialAddFlowState().draft;
+    const recognized = { ...draft, title: "Recognized" };
+    const save = vi.fn(async () => 17);
+
+    await expect(
+      persistWithRecognized(save)(draft, null, recognized),
+    ).resolves.toBe(17);
+
+    expect(save).toHaveBeenCalledWith(draft, null, { recognized });
+  });
+});
 
 function bulkSeams(
   overrides: Partial<
@@ -161,12 +176,35 @@ describe("Add flow commands", () => {
         pages: [{ pageNo: 1, imageFilename: null, text }],
       },
     });
+    expect(result.recognized).toEqual(result.draft);
+    expect(result.recognized).not.toBe(result.draft);
   });
 
-  it("saves successfully and turns failures into state errors without throwing", async () => {
+  it("keeps an imported snapshot isolated from edits and sends it with the save", async () => {
+    const original = {
+      ...initialAddFlowState().draft,
+      title: "Recognized title",
+      tags: ["recognized"],
+    };
+    const imported = await importUrl(initialAddFlowState(), "https://recipe.test", {
+      fetchUrlImport: async () => ({ draft: original }),
+    });
+    const working = { ...imported.draft, tags: ["edited"] };
+    const edited = editDraft(imported, working);
+    const persist = vi.fn(async () => 81);
+
+    expect(edited.recognized?.tags).toEqual(["recognized"]);
+    expect(edited.recognized).not.toBe(edited.draft);
+    await saveDraft(edited, { persist });
+
+    expect(persist).toHaveBeenCalledWith(edited.draft, null, edited.recognized);
+  });
+
+  it("omits recognized data for manual saves and turns failures into errors", async () => {
     const state = initialAddFlowState();
-    const persist = vi.fn(async (_draft: RecipeDraft, photoFile: File | null) => {
+    const persist = vi.fn(async (_draft: RecipeDraft, photoFile: File | null, recognized) => {
       expect(photoFile).toBeNull();
+      expect(recognized).toBeNull();
       return 81;
     });
     await expect(saveDraft(state, { persist })).resolves.toMatchObject({

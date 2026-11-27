@@ -96,11 +96,13 @@ describe("save seam — static guard", () => {
     expect(routeSource).not.toMatch(/\.(intent|recipeId)\b/);
   });
 
-  it("HTTP helper builds commands and never decodes or persists", () => {
+  it("HTTP helper decodes only the optional recognized snapshot", () => {
     expect(httpSource).toMatch(/export async function parseSaveBody/);
     expect(httpSource).toMatch(/multipart\/form-data/);
     expect(httpSource).not.toMatch(/draft-store\.server/);
-    expect(httpSource).not.toMatch(/decodeDraftPayload|prepareDraft\(/);
+    expect(httpSource).toMatch(/decodeDraftPayload\(body\.recognized\)/);
+    expect(httpSource).toMatch(/decodeDraftPayload\(rawRecognized\)/);
+    expect(httpSource).not.toMatch(/prepareDraft\(/);
     expect(httpSource).not.toMatch(
       /deleteRecipe\(|executeSave\(/,
     );

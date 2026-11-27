@@ -13,7 +13,12 @@
  * would be pulled into the client bundle.
  */
 import { MAX_SCAN_UPLOAD_BYTES } from "./scan/index.server";
-import type { SaveCommand, SavePageFile } from "./save-command";
+import {
+  decodeDraftPayload,
+  type SaveCommand,
+  type SavePageFile,
+} from "./save-command";
+import type { RecipeDraft } from "./draft";
 
 /** A command ready to dispatch, or a Response the caller should return. */
 export type ParseSaveResult = SaveCommand | { error: Response };
@@ -57,12 +62,25 @@ function draftCommand(
   recipeId: number | null,
   draft: unknown,
   imageBytes: Buffer | null,
+  recognized?: RecipeDraft | null,
   pageFiles: SavePageFile[] = [],
   pdfBytes: Buffer | null = null,
 ): ParseSaveResult {
   return recipeId === null
-    ? { kind: "new", draft, imageBytes, pageFiles, pdfBytes }
-    : { kind: "revise", recipeId, draft };
+    ? {
+        kind: "new",
+        draft,
+        imageBytes,
+        pageFiles,
+        pdfBytes,
+        ...(recognized !== undefined ? { recognized } : {}),
+      }
+    : {
+        kind: "revise",
+        recipeId,
+        draft,
+        ...(recognized !== undefined ? { recognized } : {}),
+      };
 }
 
 /**
@@ -93,7 +111,11 @@ async function parseJsonBody(request: Request): Promise<ParseSaveResult> {
   }
 
   const body = payload as Record<string, unknown>;
-  const wrapper = "draft" in body || "recipeId" in body || "intent" in body;
+  const wrapper =
+    "draft" in body ||
+    "recipeId" in body ||
+    "intent" in body ||
+    "recognized" in body;
   const recipeId = readRecipeId(body.recipeId);
   if (recipeId === undefined) return badRequest("bad-recipe-id");
   const intent = readIntent(body.intent);
@@ -107,7 +129,16 @@ async function parseJsonBody(request: Request): Promise<ParseSaveResult> {
   if (body.draft === null || body.draft === undefined) {
     return badRequest("missing-draft");
   }
-  return draftCommand(recipeId, body.draft, null);
+  let recognized: RecipeDraft | null | undefined;
+  if ("recognized" in body) {
+    try {
+      recognized =
+        body.recognized === null ? null : decodeDraftPayload(body.recognized);
+    } catch {
+      return badRequest("bad-draft");
+    }
+  }
+  return draftCommand(recipeId, body.draft, null, recognized);
 }
 
 async function parseMultipartBody(request: Request): Promise<ParseSaveResult> {
@@ -126,6 +157,17 @@ async function parseMultipartBody(request: Request): Promise<ParseSaveResult> {
   const rawDraft = form.get("draft");
   if (typeof rawDraft !== "string" || rawDraft.length === 0) {
     return badRequest("missing-draft");
+  }
+  const rawRecognized = form.get("recognized");
+  let recognized: RecipeDraft | null | undefined;
+  if (rawRecognized !== null) {
+    if (typeof rawRecognized !== "string") return badRequest("bad-draft");
+    try {
+      recognized =
+        rawRecognized === "null" ? null : decodeDraftPayload(rawRecognized);
+    } catch {
+      return badRequest("bad-draft");
+    }
   }
 
   const file = form.get("image");
@@ -196,6 +238,7 @@ async function parseMultipartBody(request: Request): Promise<ParseSaveResult> {
     recipeId,
     rawDraft,
     recipeId === null ? imageBytes : null,
+    recognized,
     recipeId === null ? pageFiles : [],
     recipeId === null ? pdfBytes : null,
   );

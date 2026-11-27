@@ -122,6 +122,27 @@ describe("save", () => {
     expect(hook.error).toBeNull();
   });
 
+  it("echoes the recognized snapshot in the JSON body", async () => {
+    mocks.fetch.mockResolvedValue(jsonResponse({ recipeId: 42 }));
+    mount(7);
+    const recognized = { ...draft(), title: "Original title" };
+
+    await hook.save(draft(), null, { recognized });
+
+    const body = JSON.parse(mocks.fetch.mock.calls[0]![1]!.body as string);
+    expect(body.recognized.title).toBe("Original title");
+  });
+
+  it("omits a null recognized snapshot from the JSON body", async () => {
+    mocks.fetch.mockResolvedValue(jsonResponse({ recipeId: 42 }));
+    mount(7);
+
+    await hook.save(draft(), null, { recognized: null });
+
+    const body = JSON.parse(mocks.fetch.mock.calls[0]![1]!.body as string);
+    expect(body).not.toHaveProperty("recognized");
+  });
+
   it("omits recipeId when creating a new recipe", async () => {
     mocks.fetch.mockResolvedValue(jsonResponse({ recipeId: 1 }));
     mount();
@@ -150,6 +171,22 @@ describe("save", () => {
     const sent = form.get("image") as File;
     expect(sent.name).toBe("capture.png");
     expect(sent.type).toBe("image/png");
+  });
+
+  it("echoes the recognized snapshot in multipart alongside the photo", async () => {
+    mocks.fetch.mockResolvedValue(jsonResponse({ recipeId: 9 }));
+    mount();
+    const file = new File([new Uint8Array([1])], "capture.png", {
+      type: "image/png",
+    });
+    const recognized = { ...draft(), title: "Original title" };
+
+    await hook.save(draft(), file, { recognized });
+
+    const form = mocks.fetch.mock.calls[0]![1]!.body as FormData;
+    expect(JSON.parse(form.get("recognized") as string).title).toBe(
+      "Original title",
+    );
   });
 
   it("sends multipart for multi-page extras without an image", async () => {

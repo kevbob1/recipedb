@@ -7,6 +7,7 @@ import {
   backfillRecipe,
   listBackfillTargets,
 } from "../lib/backfill.server";
+import { reparseRecipe } from "../lib/scan/reparse.server";
 
 function jsonError(error: string, status: number): Response {
   return Response.json({ error }, { status });
@@ -42,6 +43,24 @@ export async function action({ request }: Route.ActionArgs) {
     .where(eq(recipes.id, recipeId))
     .get();
   if (!recipe) return jsonError("not-found", 404);
+
+  if (body.mode === "reparse") {
+    if (body.dryRun === true) {
+      const result = listBackfillTargets();
+      const status = body.force !== true &&
+        result.skipped.some((entry) => entry.id === recipeId)
+        ? "skipped-reviewed"
+        : result.targets.some((entry) => entry.id === recipeId)
+          ? "would-reparse"
+          : "skipped-not-scan";
+      return Response.json({ recipeId, status });
+    }
+    const result = await reparseRecipe(recipeId, undefined, {
+      force: body.force === true,
+    });
+    if (result.reason === "not-found") return jsonError("not-found", 404);
+    return Response.json(result);
+  }
 
   if (body.dryRun === true) {
     const result = listBackfillTargets();

@@ -257,6 +257,7 @@ export type SaveCommand =
   | {
       kind: "new";
       draft: unknown;
+      recognized?: RecipeDraft | null;
       imageBytes?: Buffer | null;
       pageFiles?: SavePageFile[];
       pdfBytes?: Buffer | null;
@@ -265,11 +266,13 @@ export type SaveCommand =
       kind: "revise";
       recipeId: number;
       draft: unknown;
+      recognized?: RecipeDraft | null;
       /**
        * "accept" records a review acceptance and preserves first-persisted
        * raw OCR. "backfill" replaces existing samples so new OCR is raw text.
+       * "reparse" preserves the write-once raw OCR and review state.
        */
-      capture?: "accept" | "backfill";
+      capture?: "accept" | "backfill" | "reparse";
       /** Backfill acceptance timestamp; only valid with capture: "backfill". */
       acceptedAt?: Date;
     }
@@ -292,6 +295,7 @@ export type ValidatedSaveCommand =
   | {
       kind: "new";
       prepared: PersistedDraft;
+      recognized: RecipeDraft | null;
       imageBytes: Buffer | null;
       pageFiles: SavePageFile[];
       pdfBytes: Buffer | null;
@@ -300,7 +304,8 @@ export type ValidatedSaveCommand =
       kind: "revise";
       recipeId: number;
       prepared: PersistedDraft;
-      capture: "accept" | "backfill";
+      recognized: RecipeDraft | null;
+      capture: "accept" | "backfill" | "reparse";
       acceptedAt?: Date;
     }
   | { kind: "delete"; recipeId: number };
@@ -383,6 +388,10 @@ export function validateSaveCommand(command: SaveCommand): ValidatedSaveCommand 
       return {
         kind: "new",
         prepared,
+        recognized:
+          command.recognized == null
+            ? null
+            : decodeDraftPayload(command.recognized),
         imageBytes: command.imageBytes ?? null,
         pageFiles: validatePageFiles(command.pageFiles),
         pdfBytes: command.pdfBytes ?? null,
@@ -390,7 +399,7 @@ export function validateSaveCommand(command: SaveCommand): ValidatedSaveCommand 
     }
     case "revise": {
       const capture = command.capture ?? "accept";
-      if (capture !== "accept" && capture !== "backfill") {
+      if (capture !== "accept" && capture !== "backfill" && capture !== "reparse") {
         throw new SaveError("bad-draft", `Unknown training capture mode "${String(capture)}".`);
       }
       if (command.acceptedAt !== undefined && capture !== "backfill") {
@@ -403,6 +412,10 @@ export function validateSaveCommand(command: SaveCommand): ValidatedSaveCommand 
         kind: "revise",
         recipeId: requireRecipeId(command.recipeId),
         prepared: validateDraft(command.draft),
+        recognized:
+          command.recognized == null
+            ? null
+            : decodeDraftPayload(command.recognized),
         capture,
         acceptedAt: command.acceptedAt,
       };

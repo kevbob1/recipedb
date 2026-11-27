@@ -7,6 +7,7 @@ type SamplePage = Omit<NewRecipePage, "recipeId">;
 type CaptureMode =
   | { mode: "initial" }
   | { mode: "accept" }
+  | { mode: "reparse" }
   | { mode: "backfill"; acceptedAt?: Date };
 
 /**
@@ -29,6 +30,7 @@ export function captureTrainingSamples(
           .select({
             pageNo: ocrTrainingSamples.pageNo,
             rawOcrText: ocrTrainingSamples.rawOcrText,
+            acceptedAt: ocrTrainingSamples.acceptedAt,
           })
           .from(ocrTrainingSamples)
           .where(eq(ocrTrainingSamples.recipeId, recipeId))
@@ -52,9 +54,11 @@ export function captureTrainingSamples(
         acceptedAt:
           capture.mode === "initial"
             ? null
-            : capture.mode === "accept"
-              ? new Date()
-              : (capture.acceptedAt ?? new Date()),
+          : capture.mode === "accept"
+            ? new Date()
+            : capture.mode === "reparse"
+              ? (existing.find((row) => row.pageNo === page.pageNo)?.acceptedAt ?? null)
+            : (capture.acceptedAt ?? new Date()),
       })),
     )
     .run();

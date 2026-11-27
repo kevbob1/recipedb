@@ -44,7 +44,7 @@ import { isStagedPath, retainedName } from "./scan/image-path";
 import fs from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { getDb, getImagesDir, getRawSqlite } from "../db/client.server";
+import { getDb, getImagesDir } from "../db/client.server";
 import {
   ingredientLines,
   recipePages,
@@ -67,6 +67,7 @@ import {
   type SaveCommand,
   type SavePageFile,
 } from "./save-command";
+import { appendSaveEvent } from "./save-events.server";
 import {
   ScanImageError,
   attachImageFilename,
@@ -215,6 +216,7 @@ export function executeSave(command: SaveCommand): SaveResult {
         validated.imageBytes,
         validated.pageFiles,
         validated.pdfBytes,
+        validated.recognized,
       );
     case "revise":
       return reviseDraft(
@@ -222,6 +224,7 @@ export function executeSave(command: SaveCommand): SaveResult {
         validated.prepared,
         validated.capture,
         validated.acceptedAt,
+        validated.recognized,
       );
     case "delete":
       return removeRecipe(validated.recipeId);
@@ -246,6 +249,7 @@ function insertNewRecipe(
   imageBytes: Buffer | null,
   pageFiles: SavePageFile[] = [],
   pdfBytes: Buffer | null = null,
+  recognized: RecipeDraft | null = null,
 ): SaveDraftResult {
   // Validate before touching storage: a bad capture cannot create a recipe.
   if (imageBytes) validateScanUpload(imageBytes);
@@ -260,9 +264,9 @@ function insertNewRecipe(
     updatedAt: now,
   };
 
-  const sqlite = getRawSqlite();
   let recipeId = 0;
-  const run = sqlite.transaction(() => {
+  try {
+    getDb().transaction((tx) => {
     const inserted = getDb()
       .insert(recipes)
       .values(baseRecipe)
@@ -330,10 +334,23 @@ function insertNewRecipe(
           originalFilename)
         : originalFilename);
     if (cover) attachImageFilename(recipeId, cover);
-  });
 
-  try {
-    run();
+    const finalPrepared: PersistedDraft = {
+      ...prepared,
+      fields: { ...prepared.fields, imageFilename: cover },
+      pages,
+    };
+    appendSaveEvent(
+      {
+        recipeId,
+        captureMode: "save",
+        recognized,
+        saved: composeDraft(finalPrepared),
+        at: now,
+      },
+      tx,
+    );
+    });
   } catch (err) {
     // The transaction rolled the row back; remove any capture directory the
     // failed attach managed to create before the error surfaced (#28).
@@ -367,14 +384,14 @@ function removeRecipe(recipeId: number): DeleteDraftResult {
 function reviseDraft(
   id: number,
   prepared: PersistedDraft,
-  captureMode: "accept" | "backfill",
+  captureMode: "accept" | "backfill" | "reparse",
   acceptedAt?: Date,
+  recognized: RecipeDraft | null = null,
 ): SaveDraftResult {
   const now = new Date();
   const db = getDb();
 
-  const sqlite = getRawSqlite();
-  const run = sqlite.transaction(() => {
+  db.transaction((tx) => {
     const existing = db
       .select({ id: recipes.id })
       .from(recipes)
@@ -392,12 +409,30 @@ function reviseDraft(
     insertChildren(id, prepared);
     // Backfill's destructive raw replacement is owned by scan/training-samples;
     // its mode intentionally skips the ordinary write-once raw lookup.
-    captureTrainingSamples(db, id, prepared.pages ?? [], {
-      mode: captureMode,
-      acceptedAt,
-    });
+    captureTrainingSamples(
+      db,
+      id,
+      prepared.pages ?? [],
+      captureMode === "backfill"
+        ? { mode: captureMode, acceptedAt }
+        : { mode: captureMode },
+    );
+    appendSaveEvent(
+      {
+        recipeId: id,
+        captureMode:
+          captureMode === "backfill"
+            ? "backfill"
+            : captureMode === "reparse"
+              ? "reparse"
+              : "revise",
+        recognized,
+        saved: composeDraft(prepared),
+        at: now,
+      },
+      tx,
+    );
   });
-  run();
 
   return { recipeId: id, isDraft: true };
 }

@@ -29,6 +29,7 @@ export interface AddFlowState {
   step: AddStep;
   entry: Entry;
   draft: RecipeDraft;
+  recognized: RecipeDraft | null;
   urlInput: string;
   error: string | null;
   photo: { status: PhotoStatus; file: File | null };
@@ -47,6 +48,7 @@ export function initialAddFlowState(): AddFlowState {
     step: 1,
     entry: null,
     draft: createDraft({ kind: "manual" }),
+    recognized: null,
     urlInput: "",
     error: null,
     photo: { status: "idle", file: null },
@@ -56,12 +58,29 @@ export function initialAddFlowState(): AddFlowState {
   };
 }
 
+/** Adapt the flow's recognized snapshot to the save hook's extras object. */
+export function persistWithRecognized(
+  save: (
+    draft: RecipeDraft,
+    photoFile: File | null,
+    extras?: { recognized?: RecipeDraft | null },
+  ) => Promise<number>,
+): (
+  draft: RecipeDraft,
+  photoFile: File | null,
+  recognized: RecipeDraft | null,
+) => Promise<number> {
+  return (draft, photoFile, recognized) =>
+    save(draft, photoFile, { recognized });
+}
+
 export function chooseEntry(state: AddFlowState, entry: Entry): AddFlowState {
   return {
     ...state,
     entry,
     error: null,
     draft: createDraft({ kind: "manual" }),
+    recognized: null,
     bulk: {
       ...state.bulk,
       states: [],
@@ -107,7 +126,11 @@ export function createAddFlowActions(
   dependencies: {
     fetchUrlImport: (url: string) => Promise<Pick<ImportedDraft, "draft">>;
     recognize: (file: File) => Promise<string>;
-    persist: (draft: RecipeDraft, photoFile: File | null) => Promise<number>;
+    persist: (
+      draft: RecipeDraft,
+      photoFile: File | null,
+      recognized: RecipeDraft | null,
+    ) => Promise<number>;
     bulkSeams: AppBulkSeams;
     clearSaveError: () => void;
   },
@@ -209,7 +232,13 @@ export async function importUrl(
   next = { ...next, submitInFlight: true };
   try {
     const { draft } = await dependencies.fetchUrlImport(url);
-    return { ...next, draft, step: 3, submitInFlight: false };
+    return {
+      ...next,
+      draft,
+      recognized: structuredClone(draft),
+      step: 3,
+      submitInFlight: false,
+    };
   } catch (error) {
     return {
       ...next,
@@ -239,13 +268,17 @@ export async function recognizePhoto(
   try {
     next = { ...next, photo: { ...next.photo, status: "ocr" } };
     const text = await dependencies.recognize(file);
+    const draft = createDraft({
+      kind: "scan",
+      text,
+      pages: [{ pageNo: 1, imageFilename: "", text }],
+    });
     return {
       ...next,
-      draft: createDraft({
-        kind: "scan",
-        text,
-        pages: [{ pageNo: 1, imageFilename: "", text }],
-      }),
+      draft,
+      // The machine's draft is captured before any human edit; the working
+      // draft may later be replaced, so this stays the pre-edit echo (ADR-0006).
+      recognized: structuredClone(draft),
       photo: { ...next.photo, status: "done" },
       step: 3,
     };
@@ -261,14 +294,22 @@ export async function recognizePhoto(
 export async function saveDraft(
   state: AddFlowState,
   dependencies: {
-    persist: (draft: RecipeDraft, photoFile: File | null) => Promise<number>;
+    persist: (
+      draft: RecipeDraft,
+      photoFile: File | null,
+      recognized: RecipeDraft | null,
+    ) => Promise<number>;
   },
 ): Promise<AddFlowState> {
   const next = { ...state, error: null };
   try {
     return {
       ...next,
-      savedRecipeId: await dependencies.persist(state.draft, state.photo.file),
+      savedRecipeId: await dependencies.persist(
+        state.draft,
+        state.photo.file,
+        state.recognized,
+      ),
       step: 4,
     };
   } catch (error) {
