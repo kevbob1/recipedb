@@ -21,13 +21,18 @@ import { fileURLToPath } from "node:url";
 const CLIENT_DIR = fileURLToPath(new URL("./build/client/", import.meta.url));
 
 async function main() {
-  const { bootstrap, handleStaticAsset } = await import("./build/server/boot.mjs");
+  const {
+    bootstrap,
+    handleCorsHttpRequest,
+    handleStaticAsset,
+  } = await import("./build/server/boot.mjs");
   const port = bootstrap();
 
   const build = await import("./build/server/index.js");
   const listener = createRequestListener({ build });
   const server = createServer((req, res) => {
     if (handleStaticAsset(req, res, CLIENT_DIR)) return;
+    if (handleCorsHttpRequest(req, res)) return;
     listener(req, res).catch((err) => {
       console.error("[request] error", err);
       if (!res.headersSent) {

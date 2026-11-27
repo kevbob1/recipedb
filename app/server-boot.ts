@@ -19,6 +19,11 @@ import { getPort } from "./lib/env.server";
  * app/lib/static-assets.server.ts (#26).
  */
 export { handleStaticAsset } from "./lib/static-assets.server";
+export {
+  corsHeadersForRequest,
+  handleCors,
+  handleCorsHttpRequest,
+} from "./lib/cors.server";
 
 /**
  * Run everything that must happen before the HTTP listener opens.

@@ -16,7 +16,13 @@ vi.mock("./lib/auth.server", () => ({
   assertAuthEnvConfigured: mocks.assertAuthEnvConfigured,
 }));
 
-import { bootstrap, handleStaticAsset } from "./server-boot";
+import {
+  bootstrap,
+  corsHeadersForRequest,
+  handleCors,
+  handleCorsHttpRequest,
+  handleStaticAsset,
+} from "./server-boot";
 
 const originalPort = process.env.PORT;
 
@@ -65,5 +71,11 @@ describe("bootstrap", () => {
 
   it("re-exports the static asset handler server.js serves client files with", () => {
     expect(typeof handleStaticAsset).toBe("function");
+  });
+
+  it("re-exports the CORS handlers server.js uses for API requests", () => {
+    expect(typeof handleCors).toBe("function");
+    expect(typeof corsHeadersForRequest).toBe("function");
+    expect(typeof handleCorsHttpRequest).toBe("function");
   });
 });
