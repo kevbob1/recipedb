@@ -1,7 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { getDb, getImagesDir } from "../db/client.server";
@@ -10,12 +8,10 @@ import { executeSave } from "../lib/draft-store.server";
 import { createDraft } from "../lib/import";
 import {
   action as backfillAction,
-  default as BackfillRoute,
   loader as backfillLoader,
 } from "./api.backfill-scan-ocr";
 import {
   action as normalizeAction,
-  default as NormalizeRoute,
   loader as normalizeLoader,
 } from "./api.backfill-normalize-images";
 import { withDb } from "../lib/testing/with-db";
@@ -55,14 +51,15 @@ async function responseJson(response: Response): Promise<unknown> {
 }
 
 describe("backfill routes", () => {
-  it("lists targets and renders the minimal API component", async () => {
+  it("returns the target list as a verbatim JSON resource response", async () => {
     const recipeId = makeRecipe();
     const response = await backfillLoader(routeArgs(request(undefined, "GET")));
-    expect(await responseJson(response as Response)).toMatchObject({
+    expect(response.headers.get("content-type")).toMatch(/^application\/json/);
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({
       targets: [{ id: recipeId, title: "Route recipe" }],
       skipped: [],
     });
-    expect(renderToStaticMarkup(createElement(BackfillRoute))).toBe("");
   });
 
   it("validates post payloads and returns 404 for unknown recipes", async () => {
@@ -115,7 +112,6 @@ describe("normalize image route", () => {
       failed: [],
       orphans: { reported: [] },
     });
-    expect(renderToStaticMarkup(createElement(NormalizeRoute))).toBe("");
     expect((await normalizeAction(routeArgs(request("{")))).status).toBe(400);
     expect((await normalizeAction(routeArgs(request("null")))).status).toBe(400);
   });

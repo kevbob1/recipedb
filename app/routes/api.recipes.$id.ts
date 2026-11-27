@@ -12,6 +12,7 @@ export function action({ request }: Route.ActionArgs) {
   return Response.json({ error: "method-not-allowed" }, { status: 405 });
 }
 
-export default function ApiRecipeRoute() {
-  return null;
-}
+// Resource route: exporting no `default`/`ErrorBoundary` component keeps React
+// Router's handleResourceRequest in charge, which passes every loader/action
+// Response through verbatim instead of rendering it through the document/error
+// pipeline.

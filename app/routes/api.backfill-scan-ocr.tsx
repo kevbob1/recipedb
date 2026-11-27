@@ -79,6 +79,7 @@ export async function action({ request }: Route.ActionArgs) {
   return Response.json(result);
 }
 
-export default function BackfillScanOcrRoute() {
-  return null;
-}
+// Resource route: exporting no `default`/`ErrorBoundary` component keeps React
+// Router's handleResourceRequest in charge, which passes every loader/action
+// Response through verbatim — JSON 200/400/404 as-is — instead of rendering
+// them through the document/error pipeline.

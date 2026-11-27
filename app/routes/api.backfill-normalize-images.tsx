@@ -27,6 +27,7 @@ export async function action({ request }: Route.ActionArgs) {
   );
 }
 
-export default function BackfillNormalizeImagesRoute() {
-  return null;
-}
+// Resource route: exporting no `default`/`ErrorBoundary` component keeps React
+// Router's handleResourceRequest in charge, which passes every loader/action
+// Response through verbatim — JSON 200/400 as-is — instead of rendering them
+// through the document/error pipeline.
